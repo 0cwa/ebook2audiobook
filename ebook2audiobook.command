@@ -32,13 +32,15 @@ export DEVICE_TAG="${DEVICE_TAG:-}"
 export CONDA_HOME="$HOME/Miniforge3"
 export CONDA_BIN_PATH="$CONDA_HOME/bin"
 export CONDA_ENV="$CONDA_HOME/etc/profile.d/conda.sh"
-export PATH="$CONDA_BIN_PATH:${PATH-}"
+export E2A_LOCAL_BIN="${E2A_LOCAL_BIN:-$HOME/.local/bin}"
+export CALIBRE_INSTALL_DIR="${E2A_CALIBRE_INSTALL_DIR:-$HOME/.local/opt/ebook2audiobook-calibre}"
+export PATH="$E2A_LOCAL_BIN:$CALIBRE_INSTALL_DIR/calibre:$HOME/.cargo/bin:$CONDA_BIN_PATH:${PATH-}"
 export PODMAN_DESKTOP="0"
 export DOCKER_DESKTOP="0"
 export DOCKER_DEVICE_STR=""
 export DEVICE_INFO_STR=""
 export HOMEBREW_NO_ENV_HINTS="1"
-export SUDO="sudo"
+export E2A_ALLOW_SYSTEM_INSTALL="${E2A_ALLOW_SYSTEM_INSTALL:-0}"
 
 NATIVE="native"
 BUILD_DOCKER="build_docker"
@@ -62,13 +64,15 @@ MINIFORGE_LINUX_INSTALLER_URL="https://github.com/conda-forge/miniforge/releases
 RUST_INSTALLER_URL="https://sh.rustup.rs"
 INSTALLED_LOG="$SCRIPT_DIR/.installed"
 UNINSTALLER="$SCRIPT_DIR/uninstall.sh"
-WGET="$(command -v wget 2>/dev/null || true)"
 
 typeset -A arguments=() # associative array
 typeset -a programs_missing=() # indexed array
 
 PACK_MGR=""
-PACK_MGR_OPTIONS=""
+typeset -a PACK_MGR_OPTIONS=()
+BREW_BIN=""
+BREW_PREFIX=""
+PACKAGE_BACKEND=""
 BUILD_NAME=""
 ISO3_LANG="eng"
 
@@ -154,48 +158,31 @@ if [[ "$SCRIPT_MODE" == "$BUILD_DOCKER" ]]; then
 	fi
 fi
 
-[[ "${OSTYPE-}" != darwin* && "$SCRIPT_MODE" != "$BUILD_DOCKER" ]] && SUDO="sudo" || SUDO=""
 [[ "${OSTYPE-}" == darwin* ]] && SHELL_NAME="zsh" || SHELL_NAME="bash"
 
 cd "$SCRIPT_DIR"
+mkdir -p "$TMPDIR"
 
 if [[ "$SCRIPT_MODE" == "$FULL_DOCKER" ]]; then
     USER="${USER:-root}"
     HOME="${HOME:-/root}"
-    SUDO=""
 fi
 
 if [[ ! -f "$INSTALLED_LOG" && "$SCRIPT_MODE" != "$BUILD_DOCKER" ]]; then
 	touch "$INSTALLED_LOG"
 fi
 
-######## check if the user is part of the read/write group
+######## verify that headless output paths are user-writable
 if [[ -n "${arguments[headless]+exists}" && ! -n "${arguments[script_mode]+exists}" ]]; then
 	PUBLIC_DIRS=("$SCRIPT_DIR/tmp" "$SCRIPT_DIR/models" "$SCRIPT_DIR/audiobooks")
-	if [[ "$OSTYPE" == "darwin"* ]]; then
-		APP_GROUP=$(stat -f '%Sg' "$SCRIPT_DIR")
-	else
-		APP_GROUP=$(stat -c '%G' "$SCRIPT_DIR")
-	fi
-	user_in_group() {
-		if [[ -n "${USER:-}" ]]; then
-			id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx "$1"
-		else
-			return 1
+	for public_dir in "${PUBLIC_DIRS[@]}"; do
+		mkdir -p "$public_dir"
+		if [[ ! -w "$public_dir" ]]; then
+			echo "ERROR: headless output directory is not writable by this user: $public_dir"
+			echo "Use a user-owned checkout or fix the directory ownership before retrying."
+			exit 1
 		fi
-	}
-	if [[ -n "${USER:-}" ]] && ! user_in_group "$APP_GROUP"; then
-		echo "Adding $USER to group $APP_GROUP (requires sudo)..."
-		if [[ "$OSTYPE" == "darwin"* ]]; then
-			sudo dseditgroup -o edit -a "$USER" -t user "$APP_GROUP"
-			echo "Group added. Please restart your terminal and re-run:"
-			echo "  $0 $*"
-			exit 0
-		else
-			sudo usermod -aG "$APP_GROUP" "$USER"
-			exec sg "$APP_GROUP" -c "\"$0\" $*"
-		fi
-	fi
+	done
 fi
 
 if [[ -n "${arguments[version]+exists}" ]]; then
@@ -457,6 +444,7 @@ function check_required_programs {
 		# Normalize special binaries
 		[[ "$program" == "nodejs" ]] && bin="node"
 		[[ "$program" == "rust" ]]   && bin="rustc"
+		[[ "$program" == "calibre" && "${OSTYPE-}" != darwin* ]] && bin="ebook-convert"
 		# Special case: tesseract OCR
 		if [[ "$program" == "tesseract" || "$program" == "tesseract-ocr" ]]; then
 			bin="tesseract"
@@ -475,8 +463,22 @@ function check_required_programs {
 				else
 					pkg="$program"
 				fi
-				check_xcb=$(ldconfig -p 2>/dev/null | grep libxcb-cursor)
-				if [[ "$check_xcb" == "" ]]; then
+				local check_xcb=""
+				if [[ -n "$BREW_PREFIX" ]]; then
+					for xcb_lib in \
+						"$BREW_PREFIX/lib/libxcb-cursor.so" \
+						"$BREW_PREFIX/lib/libxcb-cursor.so.0" \
+						"$BREW_PREFIX/lib/libxcb-cursor.dylib"; do
+						if [[ -e "$xcb_lib" ]]; then
+							check_xcb="$xcb_lib"
+							break
+						fi
+						done
+				fi
+				if [[ -z "$check_xcb" ]]; then
+					check_xcb="$(ldconfig -p 2>/dev/null | grep libxcb-cursor || true)"
+				fi
+				if [[ -z "$check_xcb" ]]; then
 					programs_missing+=("$pkg")
 				fi
 			fi
@@ -491,174 +493,336 @@ function check_required_programs {
 	(( ${#programs_missing[@]} == 0 ))
 }
 
-function install_programs {
-	if [[ "${OSTYPE-}" == darwin* ]]; then
-		echo -e "\e[33mInstalling required programs…\e[0m"
-		PACK_MGR="brew install --force"
-		if ! command -v brew &> /dev/null; then
-			echo -e "\e[33mHomebrew is not installed. Installing Homebrew…\e[0m"
-			/usr/bin/env bash -c "$(curl -fsSL $BREW_INSTALLER_URL)"
-			echo >> $HOME/.zprofile
-			echo 'eval "$(/usr/local/bin/brew shellenv)"' >> $HOME/.zprofile
-			eval "$(/usr/local/bin/brew shellenv)"
-			if ! grep -iqFx "homebrew" "$INSTALLED_LOG"; then
-				echo "homebrew" >> "$INSTALLED_LOG"
+function setup_brew_environment {
+	local detected_brew="${E2A_BREW_BIN:-}"
+	local candidate=""
+	typeset -a brew_candidates=()
+
+	if [[ -n "$detected_brew" && ! -x "$detected_brew" ]]; then
+		detected_brew=""
+	fi
+	if [[ -z "$detected_brew" ]]; then
+		detected_brew="$(command -v brew 2>/dev/null || true)"
+	fi
+	if [[ -z "$detected_brew" ]]; then
+		brew_candidates=(
+			"$HOME/.linuxbrew/bin/brew"
+			"$HOME/.homebrew/bin/brew"
+			"/home/linuxbrew/.linuxbrew/bin/brew"
+			"/opt/homebrew/bin/brew"
+			"/usr/local/bin/brew"
+		)
+		for candidate in "${brew_candidates[@]}"; do
+			if [[ -x "$candidate" ]]; then
+				detected_brew="$candidate"
+				break
 			fi
-		fi
-		if ! brew list --versions llvm@15 >/dev/null 2>&1; then
-			echo "Installing llvm@15 (required for numba/llvmlite on macOS)"
-			brew install llvm@15
-			export LLVM_DIR="$(brew --prefix llvm@15)/lib/cmake/llvm"
-			export PATH="$(brew --prefix llvm@15)/bin:$PATH"
-		fi
+		done
+	fi
+	[[ -n "$detected_brew" ]] || return 1
+
+	BREW_BIN="$detected_brew"
+	BREW_PREFIX="$("$BREW_BIN" --prefix 2>/dev/null || true)"
+	if [[ -z "$BREW_PREFIX" ]]; then
+		BREW_PREFIX="${BREW_BIN%/bin/brew}"
+	fi
+	export PATH="$BREW_PREFIX/bin:$BREW_PREFIX/sbin:$E2A_LOCAL_BIN:$CALIBRE_INSTALL_DIR/calibre:$HOME/.cargo/bin:$PATH"
+	return 0
+}
+
+function record_installed_component {
+	local component="$1"
+	if ! grep -iqFx "$component" "$INSTALLED_LOG"; then
+		printf '%s\n' "$component" >> "$INSTALLED_LOG"
+	fi
+}
+
+function run_privileged_command {
+	if [[ "$(id -u)" -eq 0 ]]; then
+		"$@"
+		return $?
+	fi
+	if [[ "$E2A_ALLOW_SYSTEM_INSTALL" != "1" ]]; then
+		echo "Refusing host package-manager write: privileged installation is disabled."
+		echo "Set E2A_ALLOW_SYSTEM_INSTALL=1 only if you explicitly want a host-level install."
+		return 126
+	fi
+	if command -v run0 >/dev/null 2>&1; then
+		run0 -i "$@"
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo "$@"
 	else
-		if [[ "$SUDO" == "sudo" ]]; then
-			echo -e "\e[33mInstalling required programs. NOTE: you must have 'sudo' priviliges to install ebook2audiobook.\e[0m"
+		echo "No supported privilege broker found (run0 or sudo)."
+		return 126
+	fi
+}
+
+function install_user_rust {
+	if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+		return 0
+	fi
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+		return 1
+	fi
+	local rustup_tmp="$(mktemp "$TMPDIR/ebook2audiobook-rustup.XXXXXX")"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL "$RUST_INSTALLER_URL" -o "$rustup_tmp" || { rm -f "$rustup_tmp"; return 1; }
+	else
+		wget -nv -O "$rustup_tmp" "$RUST_INSTALLER_URL" || { rm -f "$rustup_tmp"; return 1; }
+	fi
+	sh "$rustup_tmp" -y || { rm -f "$rustup_tmp"; return 1; }
+	rm -f "$rustup_tmp"
+	if [[ -f "$HOME/.cargo/env" ]]; then
+		source "$HOME/.cargo/env"
+	fi
+	export PATH="$HOME/.cargo/bin:$PATH"
+}
+
+function install_user_calibre {
+	if command -v ebook-convert >/dev/null 2>&1; then
+		return 0
+	fi
+	if [[ "${OSTYPE-}" == darwin* ]]; then
+		return 1
+	fi
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+		echo "Calibre is missing, and neither curl nor wget is available for its user-local installer."
+		return 1
+	fi
+	echo -e "\e[33mInstalling Calibre in $CALIBRE_INSTALL_DIR (user-local, isolated)…\e[0m"
+	local calibre_tmp="$(mktemp "$TMPDIR/ebook2audiobook-calibre.XXXXXX")"
+	if command -v wget >/dev/null 2>&1; then
+		wget -nv -O "$calibre_tmp" "$CALIBRE_INSTALLER_URL" || { rm -f "$calibre_tmp"; return 1; }
+	else
+		curl -fsSL "$CALIBRE_INSTALLER_URL" -o "$calibre_tmp" || { rm -f "$calibre_tmp"; return 1; }
+	fi
+	sh "$calibre_tmp" install_dir="$CALIBRE_INSTALL_DIR" isolated=y || { rm -f "$calibre_tmp"; return 1; }
+	rm -f "$calibre_tmp"
+	export PATH="$CALIBRE_INSTALL_DIR/calibre:$PATH"
+	if ! command -v ebook-convert >/dev/null 2>&1; then
+		echo "Calibre installed, but ebook-convert was not found under $CALIBRE_INSTALL_DIR/calibre."
+		return 1
+	fi
+	record_installed_component "CalibreUser:$CALIBRE_INSTALL_DIR"
+}
+
+function install_tesseract_language {
+	command -v tesseract >/dev/null 2>&1 || return 0
+	ISO3_LANG="$(get_iso3_lang "${OS_LANG:-en}")"
+	if tesseract --list-langs 2>/dev/null | grep -qx "$ISO3_LANG"; then
+		return 0
+	fi
+	echo "Detected system language: $OS_LANG → installing Tesseract OCR language: $ISO3_LANG"
+	local langpack=""
+	if [[ "$PACKAGE_BACKEND" == "brew" ]]; then
+		if ! "$BREW_BIN" list --versions tesseract-lang >/dev/null 2>&1; then
+			"$BREW_BIN" install tesseract-lang || return 1
 		fi
-		local PACK_MGR_OPTIONS=""
-		if command -v emerge &> /dev/null; then
-			PACK_MGR="emerge"
-		elif command -v dnf &> /dev/null; then
-			PACK_MGR="dnf install"
-			PACK_MGR_OPTIONS="-y"
-		elif command -v yum &> /dev/null; then
-			PACK_MGR="yum install"
-			PACK_MGR_OPTIONS="-y"
-		elif command -v zypper &> /dev/null; then
-			PACK_MGR="zypper install"
-			PACK_MGR_OPTIONS="-y"
-		elif command -v pacman &> /dev/null; then
-			PACK_MGR="pacman -Sy --noconfirm"
-		elif command -v apt-get &> /dev/null; then
-			$SUDO apt-get update
-			PACK_MGR="apt-get install"
-			PACK_MGR_OPTIONS="-y"
-		elif [[ -f /etc/unraid-version ]] || command -v installplg &>/dev/null; then
-			if ! command -v un-get &>/dev/null; then
-				echo "  → Installing un-get plugin…"
-				installplg ./ext/app/un-get.plg
-				# Add the two best repos for Unraid 7 (current as of Dec 2025)
-				mkdir -p /boot/config/plugins/un-get
-				cat > /boot/config/plugins/un-get/sources.list <<EOF
+	elif [[ "$PACKAGE_BACKEND" == "system" ]]; then
+		if command -v apt-get >/dev/null 2>&1; then
+			langpack="tesseract-ocr-$ISO3_LANG"
+		elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+			langpack="tesseract-langpack-$ISO3_LANG"
+		elif command -v zypper >/dev/null 2>&1; then
+			langpack="tesseract-ocr-$ISO3_LANG"
+		elif command -v pacman >/dev/null 2>&1; then
+			langpack="tesseract-data-$ISO3_LANG"
+		elif command -v apk >/dev/null 2>&1; then
+			langpack="tesseract-ocr-$ISO3_LANG"
+		fi
+		[[ -n "$langpack" ]] || return 1
+		install_system_package "$langpack" || return 1
+	else
+		return 0
+	fi
+	if tesseract --list-langs 2>/dev/null | grep -qx "$ISO3_LANG"; then
+		echo "Tesseract OCR language '$ISO3_LANG' successfully installed."
+	else
+		echo "Tesseract OCR language '$ISO3_LANG' was not found after installation."
+	fi
+}
+
+function install_brew_programs {
+	typeset -a formulas=()
+	local program=""
+	local formula=""
+	local existing=""
+	local already_present=0
+	local calibre_needed=0
+	for program in "${programs_missing[@]}"; do
+		formula=""
+		case "$program" in
+			calibre)
+				calibre_needed=1
+				continue
+				;;
+			nodejs) formula="node" ;;
+			pkg-config) formula="pkgconf" ;;
+			cargo|rust|rustc) formula="rust" ;;
+			libxcb-cursor0|xcb-util-cursor) formula="xcb-util-cursor" ;;
+			tesseract-ocr) formula="tesseract" ;;
+			*) formula="$program" ;;
+		esac
+		already_present=0
+		for existing in "${formulas[@]}"; do
+			[[ "$existing" == "$formula" ]] && already_present=1
+		done
+		if [[ "$already_present" -eq 0 ]]; then
+			formulas+=("$formula")
+		fi
+	done
+	if [[ "$calibre_needed" -eq 1 && "${OSTYPE-}" != darwin* ]]; then
+		already_present=0
+		for existing in "${formulas[@]}"; do
+			[[ "$existing" == "wget" ]] && already_present=1
+		done
+		if [[ "$already_present" -eq 0 ]]; then
+			formulas+=("wget")
+		fi
+	fi
+	if (( ${#formulas[@]} > 0 )); then
+		"$BREW_BIN" install "${formulas[@]}" || return 1
+	fi
+	if [[ "$calibre_needed" -eq 1 ]]; then
+		if [[ "${OSTYPE-}" == darwin* ]]; then
+			"$BREW_BIN" install --cask calibre || return 1
+		else
+			install_user_calibre || return 1
+		fi
+	fi
+	install_tesseract_language
+}
+
+function select_system_package_manager {
+	PACK_MGR=""
+	PACK_MGR_OPTIONS=()
+	if command -v emerge >/dev/null 2>&1; then
+		PACK_MGR="emerge"
+	elif command -v dnf >/dev/null 2>&1; then
+		PACK_MGR="dnf"
+		PACK_MGR_OPTIONS=(-y install)
+	elif command -v yum >/dev/null 2>&1; then
+		PACK_MGR="yum"
+		PACK_MGR_OPTIONS=(-y install)
+	elif command -v zypper >/dev/null 2>&1; then
+		PACK_MGR="zypper"
+		PACK_MGR_OPTIONS=(-y install)
+	elif command -v pacman >/dev/null 2>&1; then
+		PACK_MGR="pacman"
+		PACK_MGR_OPTIONS=(-Sy --noconfirm)
+	elif command -v apt-get >/dev/null 2>&1; then
+		PACK_MGR="apt-get"
+		PACK_MGR_OPTIONS=(-y install)
+	elif [[ -f /etc/unraid-version ]] || command -v installplg >/dev/null 2>&1; then
+		if ! command -v un-get >/dev/null 2>&1; then
+			echo "  → Installing un-get plugin…"
+			installplg ./ext/app/un-get.plg
+			mkdir -p /boot/config/plugins/un-get
+			cat > /boot/config/plugins/un-get/sources.list <<EOF
 https://slackware.uk/slackware/slackware64-current/
 https://slackware.uk/people/shinji257/unraid7/
 EOF
-				sleep 8
-			fi
-			PACK_MGR="un-get install"
-		elif command -v apk &>/dev/null; then
-			PACK_MGR="apk add"
-		else
-			echo "Cannot recognize your applications package manager. Please install the required applications manually."
-			return 1
+			sleep 8
 		fi
+		PACK_MGR="un-get"
+		PACK_MGR_OPTIONS=(install)
+	elif command -v apk >/dev/null 2>&1; then
+		PACK_MGR="apk"
+		PACK_MGR_OPTIONS=(add)
+	else
+		return 1
 	fi
-	if [[ -z "$WGET" ]]; then
-		echo -e "\e[33m wget is missing! trying to install it… \e[0m"
-		result=$(eval "$PACK_MGR wget $PACK_MGR_OPTIONS" 2>&1)
-		result_code=$?
-		if [[ $result_code -eq 0 ]]; then
-			WGET="$(command -v wget 2>/dev/null || true)"
-		else
-			echo "Cannot 'wget'. Please install 'wget'  manually."
-			return 1
-		fi
+	if [[ "$PACK_MGR" == "apt-get" ]]; then
+		run_privileged_command apt-get update || return 1
 	fi
+}
+
+function install_system_package {
+	local package="$1"
+	run_privileged_command "$PACK_MGR" "${PACK_MGR_OPTIONS[@]}" "$package"
+}
+
+function install_system_programs {
+	local program=""
 	for program in "${programs_missing[@]}"; do
-		if [[ "$program" == "calibre" ]]; then		
-			if command -v $program >/dev/null 2>&1; then
-				echo -e "\e[32m=============== Calibre OK! ===============\e[0m"
-			else
-				# avoid conflict with calibre builtin lxml
-				python3 -m pip uninstall -y lxml 2>/dev/null || true
-				echo -e "\e[33mInstalling Calibre…\e[0m"
-				if [[ "${OSTYPE-}" == darwin* ]]; then
-					eval "$PACK_MGR --cask calibre"
-				else
-					tmp="$(mktemp)"
-					$WGET -nv -O "$tmp" "$CALIBRE_INSTALLER_URL" || return 1
-					if [[ "$SUDO" == "sudo" ]]; then
-						$SUDO sh "$tmp"
-					else
-						sh "$tmp"
-					fi
-					rm -f "$tmp"
-				fi
-				eval "$SUDO $PACK_MGR $program $PACK_MGR_OPTIONS"				
-				if command -v $program >/dev/null 2>&1; then
-					echo -e "\e[32m=============== $program OK! ===============\e[0m"
-				else
-					echo -e "\e[31m=============== $program failed.\e[0m"
-				fi
-			fi	
-		elif [[ "$program" == "rust" || "$program" == "rustc" ]]; then
-			RUSTUP_TMP="$(mktemp)"
-			curl -fL "$RUST_INSTALLER_URL" -o "$RUSTUP_TMP" || return 1
-			sh "$RUSTUP_TMP" -y
-			rm -f "$RUSTUP_TMP"
-			if [[ -f "$HOME/.cargo/env" ]]; then
-				source "$HOME/.cargo/env"
-			fi
-			if command -v $program &>/dev/null; then
-				echo -e "\e[32m=============== $program OK! ===============\e[0m"
-			else
-				echo -e "\e[31m=============== $program failed.\e[0m"
-			fi
-		elif [[ "$program" == "tesseract" || "$program" == "tesseract-ocr" ]]; then
-			eval "$SUDO $PACK_MGR $program $PACK_MGR_OPTIONS"
-			if command -v $program >/dev/null 2>&1; then
-				echo -e "\e[32m=============== $program OK! ===============\e[0m"
-				ISO3_LANG="$(get_iso3_lang "${OS_LANG:-en}")"
-				echo "Detected system language: $OS_LANG → installing Tesseract OCR language: $ISO3_LANG"
-				langpack=""
-				if command -v brew &> /dev/null; then
-					langpack="tesseract-lang-$ISO3_LANG"
-				elif command -v apt-get &>/dev/null; then
-					langpack="tesseract-ocr-$ISO3_LANG"
-				elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
-					langpack="tesseract-langpack-$ISO3_LANG"
-				elif command -v zypper &>/dev/null; then
-					langpack="tesseract-ocr-$ISO3_LANG"
-				elif command -v pacman &>/dev/null; then
-					langpack="tesseract-data-$ISO3_LANG"
-				elif command -v apk &>/dev/null; then
-					langpack="tesseract-ocr-$ISO3_LANG"
-				else
-					echo "Cannot recognize your applications package manager. Please install the required applications manually."
-					return 1
-				fi
-				if [[ -n "$langpack" ]]; then
-					eval "$SUDO $PACK_MGR $langpack $PACK_MGR_OPTIONS"
-					if tesseract --list-langs | grep -q "$ISO3_LANG"; then
-						echo "Tesseract OCR language '$ISO3_LANG' successfully installed."
-					else
-						echo "Tesseract OCR language '$ISO3_LANG' not installed properly."
-					fi
-				fi
-			else
-				echo -e "\e[31m=============== $program failed.\e[0m"
-			fi
-		elif [[ "$program" == "nodejs" ]]; then
-			eval "$SUDO $PACK_MGR $program $PACK_MGR_OPTIONS"
-			if command -v node >/dev/null 2>&1; then
-				echo -e "\e[32m=============== $program OK! ===============\e[0m"
-			else
-				echo -e "\e[31m=============== $program failed.\e[0m"
-			fi
-		else
-			eval "$SUDO $PACK_MGR $program $PACK_MGR_OPTIONS"
-			if command -v $program >/dev/null 2>&1; then
-				echo -e "\e[32m=============== $program OK! ===============\e[0m"
-			else
-				echo -e "\e[31m=============== $program failed.\e[0m"
+		case "$program" in
+			calibre)
+				install_user_calibre || return 1
+				;;
+			rust|rustc)
+				install_user_rust || return 1
+				;;
+			*)
+				install_system_package "$program" || return 1
+				;;
+		esac
+	done
+	install_tesseract_language
+}
+
+function explain_unprivileged_install {
+	echo "Missing required programs: ${programs_missing[*]}"
+	echo "No privileged command was run."
+	if [[ "${OSTYPE-}" != darwin* ]]; then
+		echo "Preferred: install Homebrew for this user, then rerun."
+	fi
+	echo "To explicitly allow host package installation, rerun with:"
+	echo "  E2A_ALLOW_SYSTEM_INSTALL=1 $0"
+}
+
+function install_programs {
+	setup_brew_environment || true
+
+	if [[ -z "$BREW_BIN" && "${OSTYPE-}" == darwin* && "$E2A_ALLOW_SYSTEM_INSTALL" == "1" ]]; then
+		echo -e "\e[33mHomebrew is not installed. Installing Homebrew because E2A_ALLOW_SYSTEM_INSTALL=1 was set…\e[0m"
+		/usr/bin/env bash -c "$(curl -fsSL "$BREW_INSTALLER_URL")" || return 1
+		setup_brew_environment || return 1
+	fi
+
+	if [[ -n "$BREW_BIN" ]]; then
+		PACKAGE_BACKEND="brew"
+		echo -e "\e[33mInstalling missing programs with user Homebrew…\e[0m"
+		if [[ "${OSTYPE-}" == darwin* ]] && ! "$BREW_BIN" list --versions llvm@15 >/dev/null 2>&1; then
+			echo "Installing llvm@15 (required for numba/llvmlite on macOS)"
+			"$BREW_BIN" install llvm@15 || return 1
+			export LLVM_DIR="$("$BREW_BIN" --prefix llvm@15)/lib/cmake/llvm"
+			export PATH="$("$BREW_BIN" --prefix llvm@15)/bin:$PATH"
+		fi
+		install_brew_programs || return 1
+	elif [[ "${OSTYPE-}" != darwin* ]]; then
+		PACKAGE_BACKEND=""
+		if [[ " ${programs_missing[*]} " == *" calibre "* ]] && \
+			(command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1); then
+			install_user_calibre || return 1
+		fi
+		if [[ " ${programs_missing[*]} " == *" rust "* ]] || [[ " ${programs_missing[*]} " == *" rustc "* ]]; then
+			if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+				install_user_rust || return 1
 			fi
 		fi
-	done
+		if check_required_programs "${HOST_PROGRAMS[@]}"; then
+			return 0
+		fi
+		if [[ "$E2A_ALLOW_SYSTEM_INSTALL" != "1" ]]; then
+			explain_unprivileged_install
+			return 1
+		fi
+		PACKAGE_BACKEND="system"
+		select_system_package_manager || {
+			echo "Cannot recognize a host package manager. Please install the missing programs manually."
+			return 1
+		}
+		install_system_programs || return 1
+	else
+		explain_unprivileged_install
+		return 1
+	fi
+
 	if check_required_programs "${HOST_PROGRAMS[@]}"; then
 		return 0
-	else
-		echo "Some programs didn't install successfuly, please report the log to the support"
 	fi
+	echo "Some programs did not install successfully: ${programs_missing[*]}"
+	return 1
 }
 
 function check_conda {
@@ -677,16 +841,20 @@ function check_conda {
 
     local conda_owned=0
     if ! command -v conda &>/dev/null; then
-        local installer_url
-        local installer_path="/tmp/Miniforge3.sh"
-        local config_path
-        echo -e "\e[33mDownloading Miniforge3 installer…\e[0m"
-        if [[ "${OSTYPE-}" == darwin* ]]; then
-            config_path="$HOME/.zshrc"
-            curl -fsSLo "$installer_path" "$MINIFORGE_MACOSX_INSTALLER_URL"
-        else
-            config_path="$HOME/.bashrc"
-            wget -O "$installer_path" "$MINIFORGE_LINUX_INSTALLER_URL"
+		local installer_url
+		local installer_path="$(mktemp "$TMPDIR/Miniforge3.XXXXXX.sh")"
+		local config_path
+		echo -e "\e[33mDownloading Miniforge3 installer…\e[0m"
+		if [[ "${OSTYPE-}" == darwin* ]]; then
+			config_path="$HOME/.zshrc"
+			curl -fsSLo "$installer_path" "$MINIFORGE_MACOSX_INSTALLER_URL"
+		else
+			config_path="$HOME/.bashrc"
+			if command -v curl >/dev/null 2>&1; then
+				curl -fsSLo "$installer_path" "$MINIFORGE_LINUX_INSTALLER_URL"
+			else
+				wget -O "$installer_path" "$MINIFORGE_LINUX_INSTALLER_URL"
+			fi
         fi
         if [[ ! -f "$installer_path" ]]; then
             echo -e "\e[31m=============== Miniforge3 installer not found!\e[0m"
@@ -756,8 +924,7 @@ function check_conda {
             fi
         fi
         echo -e "\e[33mCreating ./$PYTHON_ENV with python $PYTHON_VERSION…\e[0m"
-        chmod -R 775 "$SCRIPT_DIR/audiobooks" "$SCRIPT_DIR/tmp" "$SCRIPT_DIR/models" 2>/dev/null || true
-        chmod g+s "$SCRIPT_DIR/audiobooks" "$SCRIPT_DIR/tmp" "$SCRIPT_DIR/models" 2>/dev/null || true
+		chmod -R u+rwX "$SCRIPT_DIR/audiobooks" "$SCRIPT_DIR/tmp" "$SCRIPT_DIR/models" 2>/dev/null || true
         source "$CONDA_ENV" || return 1
         if (( conda_owned == 1 )); then
             conda update -n base -c conda-forge conda -y
@@ -1023,7 +1190,7 @@ EOF
 			check_sitecustomized || exit 1
 		fi
 	elif [[ "$SCRIPT_MODE" == "$NATIVE" ]]; then
-		chmod 777 "$TMPDIR"
+		chmod u+rwx "$TMPDIR" 2>/dev/null || true
 		# Check if running in a Conda or Python virtual environment
 		if [[ -n "${CONDA_DEFAULT_ENV:-}" && "$CONDA_DEFAULT_ENV" != "base" ]]; then
 			CURRENT_PYVENV="${CONDA_PREFIX:-}"
@@ -1044,6 +1211,7 @@ EOF
 				conda deactivate &>/dev/null || true
 			fi
 		fi
+		setup_brew_environment || true
 		check_required_programs "${HOST_PROGRAMS[@]}" || install_programs || exit 1
 		check_conda || { echo -e "\e[31m=============== check_conda() failed.\e[0m"; exit 1; }
 		source "$CONDA_ENV" || exit 1

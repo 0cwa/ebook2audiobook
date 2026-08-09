@@ -100,6 +100,19 @@ if [[ -f "$INSTALLED_LOG" ]] && grep -iqF "Miniforge3" "$INSTALLED_LOG"; then
 	REMOVE_CONDA=1
 fi
 
+REMOVE_CALIBRE=0
+CALIBRE_USER_INSTALL=""
+if [[ -f "$INSTALLED_LOG" ]]; then
+	calibre_record="$(grep -i '^CalibreUser:' "$INSTALLED_LOG" | tail -n 1 || true)"
+	if [[ -n "$calibre_record" ]]; then
+		CALIBRE_USER_INSTALL="${calibre_record#*:}"
+		case "$CALIBRE_USER_INSTALL" in
+			"$HOME"/*) REMOVE_CALIBRE=1 ;;
+			*) CALIBRE_USER_INSTALL="" ;;
+		esac
+	fi
+fi
+
 # =========================================================
 # SAFE PATH CLEANUP
 # =========================================================
@@ -138,6 +151,13 @@ for d in "${SKIP_DIRS[@]}"; do
 		rm -rf "$path" 2>/dev/null || true
 	fi
 done
+
+if [[ "$REMOVE_CALIBRE" -eq 1 && -n "$CALIBRE_USER_INSTALL" && "$CALIBRE_USER_INSTALL" != "$HOME" ]]; then
+	if [[ -d "$CALIBRE_USER_INSTALL" ]]; then
+		echo "Removing user-local Calibre: $CALIBRE_USER_INSTALL"
+		rm -rf "$CALIBRE_USER_INSTALL"
+	fi
+fi
 
 # =========================================================
 # CLEAN REPOSITORY CONTENT (FIRST LEVEL ONLY)
