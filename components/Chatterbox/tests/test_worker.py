@@ -153,6 +153,10 @@ class WorkerValidationTests(unittest.TestCase):
 
             class FakeMultilingual:
                 @classmethod
+                def get_supported_languages(cls):
+                    return {language: language for language in worker.SUPPORTED_LANGUAGES}
+
+                @classmethod
                 def from_pretrained(cls, **_kwargs):
                     raise AssertionError("default worker path must not call from_pretrained")
 
@@ -186,6 +190,7 @@ class WorkerValidationTests(unittest.TestCase):
             self.assertEqual(download_calls[0]["allow_patterns"], ["weights.bin"])
             self.assertEqual(download_calls[0]["cache_dir"], str(cache))
             self.assertEqual(from_local_calls, [(str(snapshot.resolve()), {"device": "cpu"})])
+            self.assertEqual(instance.supported_languages, worker.SUPPORTED_LANGUAGES)
 
     def test_default_loader_rejects_snapshot_checksum_before_loading(self):
         with tempfile.TemporaryDirectory() as directory:

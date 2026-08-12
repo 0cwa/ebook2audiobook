@@ -1,4 +1,4 @@
-"""The deliberately small language surface exposed by the first Chatterbox slice."""
+"""E2A-to-Chatterbox language IDs for the multilingual model."""
 
 from __future__ import annotations
 
@@ -6,8 +6,29 @@ from __future__ import annotations
 # E2A uses ISO-639-3 language keys. Keep this mapping local to Chatterbox so
 # unsupported languages cannot silently fall through to another language.
 CHATTERBOX_LANGUAGES = {
+    "ara": "ar",
+    "dan": "da",
+    "deu": "de",
+    "ell": "el",
     "eng": "en",
+    "spa": "es",
+    "fin": "fi",
+    "fra": "fr",
+    "heb": "he",
+    "hin": "hi",
+    "ita": "it",
+    "jpn": "ja",
+    "kor": "ko",
+    "zlm": "ms",
+    "nld": "nl",
+    "nob": "no",
+    "pol": "pl",
+    "por": "pt",
+    "rus": "ru",
     "swe": "sv",
+    "swh": "sw",
+    "tur": "tr",
+    "zho": "zh",
 }
 
 

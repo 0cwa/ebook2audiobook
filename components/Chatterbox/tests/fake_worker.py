@@ -9,6 +9,13 @@ from pathlib import Path
 import time
 
 
+SUPPORTED_LANGUAGES = [
+    "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
+    "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
+    "sw", "tr", "zh",
+]
+
+
 def send(message):
     print(json.dumps(message, separators=(",", ":")), flush=True)
 
@@ -25,7 +32,7 @@ def main():
     if mode == "no-ready":
         time.sleep(30)
         return 0
-    send({"protocol": 1, "event": "ready", "device": "cpu", "languages": ["en", "sv"], "sample_rate": 24000})
+    send({"protocol": 1, "event": "ready", "device": "cpu", "languages": SUPPORTED_LANGUAGES, "sample_rate": 24000})
     for line in os.sys.stdin:
         request = json.loads(line)
         operation = request.get("op")
@@ -62,7 +69,13 @@ def main():
                 "protocol": 1,
                 "id": request.get("id"),
                 "ok": True,
-                "result": {"path": str(path), "sample_rate": 24000, "channels": 1, "sha256": __import__("hashlib").sha256(b"fake-flac").hexdigest()},
+                "result": {
+                    "path": str(path),
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "language": request.get("language"),
+                    "sha256": __import__("hashlib").sha256(b"fake-flac").hexdigest(),
+                },
             })
     return 0
 

@@ -133,7 +133,7 @@ class ChatterboxAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with self.assertRaisesRegex(ValueError, "not supported"):
-                chatterbox_module.Chatterbox(self.session(root, "deu"))
+                chatterbox_module.Chatterbox(self.session(root, "xx"))
             with self.assertRaisesRegex(ValueError, "CPU only"):
                 chatterbox_module.Chatterbox(self.session(root, device="cuda"))
 

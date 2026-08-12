@@ -35,6 +35,7 @@ SUPPORTED_LANGUAGES = (
     "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
     "sw", "tr", "zh",
 )
+APPROVED_LANGUAGE_IDS = frozenset(SUPPORTED_LANGUAGES)
 
 MAX_SEGMENTS = 32
 MAX_TEXT_CHARS = 12000
@@ -55,6 +56,33 @@ class WorkerRequestError(ValueError):
 
 class WorkerCancelled(Exception):
     """Raised when the client asks the worker to cancel a request."""
+
+
+def _runtime_language_ids(capabilities: Any) -> tuple[str, ...]:
+    """Validate and normalize the installed package's language capability set."""
+
+    if isinstance(capabilities, Mapping):
+        raw_languages = tuple(capabilities.keys())
+    elif isinstance(capabilities, (list, tuple, set, frozenset)):
+        raw_languages = tuple(capabilities)
+    else:
+        raise RuntimeError(
+            "pinned Chatterbox runtime returned an invalid language capability set"
+        )
+    languages = tuple(str(language).lower() for language in raw_languages)
+    if any(not language for language in languages) or len(set(languages)) != len(languages):
+        raise RuntimeError(
+            "pinned Chatterbox runtime returned duplicate or invalid language capabilities"
+        )
+    runtime_ids = frozenset(languages)
+    if runtime_ids != APPROVED_LANGUAGE_IDS:
+        missing = ", ".join(sorted(APPROVED_LANGUAGE_IDS - runtime_ids)) or "none"
+        additional = ", ".join(sorted(runtime_ids - APPROVED_LANGUAGE_IDS)) or "none"
+        raise RuntimeError(
+            "pinned Chatterbox runtime language capabilities do not match the approved "
+            f"set (missing: {missing}; additional: {additional})"
+        )
+    return tuple(language for language in SUPPORTED_LANGUAGES if language in runtime_ids)
 
 
 def _message(message: Mapping[str, Any]) -> None:
@@ -444,6 +472,7 @@ class ChatterboxWorker:
         self.approved_manifest_root = approved_manifest_root
         self.model_loader = model_loader
         self.model = None
+        self.supported_languages = SUPPORTED_LANGUAGES
         self.sample_rate = SAMPLE_RATE
         self._audio_backend = None
         self._send_lock = threading.Lock()
@@ -511,16 +540,23 @@ class ChatterboxWorker:
                     raise RuntimeError(
                         "Chatterbox is unavailable; install the pinned worker runtime"
                     ) from exc
-            except Exception as exc:
-                raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
-            try:
-                with redirect_stdout(sys.stderr):
-                    self.model = ChatterboxMultilingualTTS.from_local(
-                        str(snapshot_path),
-                        device=DEVICE,
+                get_supported_languages = getattr(ChatterboxMultilingualTTS, "get_supported_languages", None)
+                if not callable(get_supported_languages):
+                    raise RuntimeError(
+                        "pinned Chatterbox runtime does not expose get_supported_languages()"
                     )
+                runtime_languages = _runtime_language_ids(get_supported_languages())
+                try:
+                    with redirect_stdout(sys.stderr):
+                        self.model = ChatterboxMultilingualTTS.from_local(
+                            str(snapshot_path),
+                            device=DEVICE,
+                        )
+                except Exception as exc:
+                    raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
             except Exception as exc:
                 raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
+            self.supported_languages = runtime_languages
         self.sample_rate = int(getattr(self.model, "sr", SAMPLE_RATE) or SAMPLE_RATE)
         if self.sample_rate != SAMPLE_RATE:
             raise RuntimeError("Chatterbox returned an unsupported sample rate")
@@ -596,6 +632,7 @@ class ChatterboxWorker:
                 request,
                 configured_roots=self.approved_roots,
                 expected_model={"revision": self.model_revision} if self.model_revision else None,
+                supported_languages=self.supported_languages,
             )
             result = self._generate_file(normalized, cancel)
             if cancel.is_set():
@@ -667,7 +704,7 @@ class ChatterboxWorker:
             "protocol": PROTOCOL_VERSION,
             "event": "ready",
             "device": DEVICE,
-            "languages": list(SUPPORTED_LANGUAGES),
+            "languages": list(self.supported_languages),
             "sample_rate": SAMPLE_RATE,
         })
         for raw_line in sys.stdin:
@@ -689,7 +726,7 @@ class ChatterboxWorker:
                         "ok": True,
                         "result": {
                             "device": DEVICE,
-                            "languages": list(SUPPORTED_LANGUAGES),
+                            "languages": list(self.supported_languages),
                             "sample_rate": SAMPLE_RATE,
                         },
                     })
