@@ -2962,6 +2962,16 @@ def convert_chapters2audio(session_id:str)->bool:
         # is the only way to cover them all.
         if not conversion:
             unload_tts_manager(tts_manager)
+        elif tts_manager is not None:
+            # Isolated engines may own a persistent worker even after a
+            # successful conversion. Close that process without changing the
+            # existing model-cache behavior for in-process engines.
+            try:
+                close = getattr(getattr(tts_manager, 'engine', None), 'close', None)
+                if callable(close):
+                    close()
+            except Exception as e:
+                print(f'convert_chapters2audio() engine close error: {e}')
 
 def combine_audio_sentences(session_id:str, file:str, block_id:str, sentence_count:int)->bool:
     try:
@@ -4204,6 +4214,12 @@ def unload_tts_manager(tts_manager:Any)->None:
     try:
         if tts_manager is not None:
             engine = getattr(tts_manager, 'engine', None)
+            close = getattr(engine, 'close', None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as close_error:
+                    print(f'unload_tts_manager() engine close error: {close_error}')
             keys = [getattr(engine, attr, None) for attr in ('tts_key', 'tts_zs_key')]
             tts_manager.engine = None
             engine = None

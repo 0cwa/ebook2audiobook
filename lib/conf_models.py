@@ -1,5 +1,6 @@
 import os, re
 from lib.conf import tts_dir, voices_dir
+from lib.conf_chatterbox_languages import CHATTERBOX_LANGUAGES
 
 loaded_tts = {}
 xtts_builtin_speakers_list = {}
@@ -13,7 +14,8 @@ TTS_ENGINES = {
     "FAIRSEQ": "fairseq",
     "GLOWTTS": "glowtts",
     "TACOTRON": "tacotron",
-    "YOURTTS": "yourtts"
+    "YOURTTS": "yourtts",
+    "CHATTERBOX": "chatterbox"
 }
 
 TTS_VOICE_CONVERSION = {
@@ -285,5 +287,17 @@ default_engine_settings = {
         "voice": None,
         "voices": {"Machinella-5": "female-en-5", "ElectroMale-2": "male-en-2", 'Machinella-4': 'female-pt-4\n', 'ElectroMale-3': 'male-pt-3\n'},
         "rating": {"VRAM": 1, "CPU": 5, "RAM": 1, "Realism": 2}
+    },
+    TTS_ENGINES['CHATTERBOX']: {
+        "repo": "ResembleAI/chatterbox",
+        "model_family": "chatterbox-multilingual",
+        "model_variant": "v2",
+        "languages": CHATTERBOX_LANGUAGES,
+        "samplerate": 24000,
+        "files": [],
+        "voice": None,
+        "voices": {},
+        "notice": "Chatterbox audio includes an imperceptible Perth watermark; Chatterbox and Perth are MIT-licensed.",
+        "rating": {"VRAM": 0, "CPU": 4, "RAM": 8, "Realism": 5}
     }
 }

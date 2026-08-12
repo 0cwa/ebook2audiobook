@@ -1125,6 +1125,8 @@ def build_interface(args:dict)->gr.Blocks:
 
             def _show_rating(tts_engine:str)->str:
                 rating = default_engine_settings[tts_engine]['rating']
+                notice = default_engine_settings[tts_engine].get('notice')
+                notice_html = f'<div style="margin-top:4px; font-size:11px;">{notice}</div>' if notice else ''
                 return f'''
                     <div style="display:flex; justify-content:space-between; align-items:flex-end;">
                         <span class="gr-markdown-span">TTS Engine</span>
@@ -1153,6 +1155,7 @@ def build_interface(args:dict)->gr.Blocks:
                           </tr>
                         </table>
                     </div>
+                    {notice_html}
                 '''
 
             def _is_valid_gradio_cache(path):
