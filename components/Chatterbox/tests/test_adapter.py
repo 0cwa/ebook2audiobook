@@ -45,8 +45,8 @@ def _load_chatterbox_adapter():
             return parts
 
     utils.TTSUtils = TTSUtils
-    sys.modules[utils_name] = utils
-    return importlib.import_module("lib.classes.tts_engines.chatterbox")
+    with patch.dict(sys.modules, {utils_name: utils}):
+        return importlib.import_module("lib.classes.tts_engines.chatterbox")
 
 
 chatterbox_module = _load_chatterbox_adapter()
