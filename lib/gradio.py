@@ -1,5 +1,58 @@
 from lib.core import *
 
+
+def format_tts_engine_rating(tts_engine: str, engine_settings: dict) -> str:
+    """Render an engine rating and its optional notice as the rating panel HTML."""
+
+    def yellow_stars(n: int) -> str:
+        return "".join(
+            "<span style='color:#f0bc00; font-size:12px'>★</span>" for _ in range(n)
+        )
+
+    def color_box(value: int) -> str:
+        if value <= 4:
+            color = "#4CAF50"  # Green = low
+        elif value <= 8:
+            color = "#FF9800"  # Orange = medium
+        else:
+            color = "#F44336"  # Red = high
+        return f"<span style='background:{color};color:white; padding: 0 3px 0 3px; border-radius:3px; font-size:11px; white-space: nowrap'>{str(value)} GB</span>"
+
+    rating = engine_settings[tts_engine]['rating']
+    notice = engine_settings[tts_engine].get('notice')
+    notice_html = f'<div style="margin-top:4px; font-size:11px;">{notice}</div>' if notice else ''
+    return f'''
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+                        <span class="gr-markdown-span">TTS Engine</span>
+                        <table style="
+                            display:inline-block;
+                            border-collapse:collapse;
+                            border:none;
+                            margin:0;
+                            padding:0;
+                            font-size:12px;
+                            line-height:1.2;   /* compact, but no clipping */
+                        ">
+                          <tr style="border:none; vertical-align:bottom;">
+                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
+                              <b>VRAM:</b> {color_box(int(rating['VRAM']))}
+                            </td>
+                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
+                              <b>CPU:</b> {yellow_stars(int(rating['CPU']))}
+                            </td>
+                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
+                              <b>RAM:</b> {color_box(int(rating['RAM']))}
+                            </td>
+                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
+                              <b>Realism:</b> {yellow_stars(int(rating['Realism']))}
+                            </td>
+                          </tr>
+                        </table>
+                    </div>
+                    {notice_html}
+    '''
+
+
 def build_interface(args:dict)->gr.Blocks:
     from lib.classes.tts_engines.common.preset_loader import load_engine_presets
     try:
@@ -1109,54 +1162,8 @@ def build_interface(args:dict)->gr.Blocks:
                 else:
                     return '<div class="spinner"></div>'
 
-            def _yellow_stars(n:int):
-                return "".join(
-                    "<span style='color:#f0bc00; font-size:12px'>★</span>" for _ in range(n)
-                )
-
-            def _color_box(value:int)->str:
-                if value <= 4:
-                    color = "#4CAF50"  # Green = low
-                elif value <= 8:
-                    color = "#FF9800"  # Orange = medium
-                else:
-                    color = "#F44336"  # Red = high
-                return f"<span style='background:{color};color:white; padding: 0 3px 0 3px; border-radius:3px; font-size:11px; white-space: nowrap'>{str(value)} GB</span>"
-
             def _show_rating(tts_engine:str)->str:
-                rating = default_engine_settings[tts_engine]['rating']
-                notice = default_engine_settings[tts_engine].get('notice')
-                notice_html = f'<div style="margin-top:4px; font-size:11px;">{notice}</div>' if notice else ''
-                return f'''
-                    <div style="display:flex; justify-content:space-between; align-items:flex-end;">
-                        <span class="gr-markdown-span">TTS Engine</span>
-                        <table style="
-                            display:inline-block;
-                            border-collapse:collapse;
-                            border:none;
-                            margin:0;
-                            padding:0;
-                            font-size:12px;
-                            line-height:1.2;   /* compact, but no clipping */
-                        ">
-                          <tr style="border:none; vertical-align:bottom;">
-                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
-                              <b>VRAM:</b> {_color_box(int(rating['VRAM']))}
-                            </td>
-                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
-                              <b>CPU:</b> {_yellow_stars(int(rating['CPU']))}
-                            </td>
-                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
-                              <b>RAM:</b> {_color_box(int(rating['RAM']))}
-                            </td>
-                            <td style="padding:0 5px 0 2.5px; border:none; vertical-align:bottom;">
-                              <b>Realism:</b> {_yellow_stars(int(rating['Realism']))}
-                            </td>
-                          </tr>
-                        </table>
-                    </div>
-                    {notice_html}
-                '''
+                return format_tts_engine_rating(tts_engine, default_engine_settings)
 
             def _is_valid_gradio_cache(path):
                 if not path or not os.path.isfile(path):
