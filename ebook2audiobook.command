@@ -39,7 +39,9 @@ export DEVICE_TAG="${DEVICE_TAG:-}"
 export CONDA_HOME="$HOME/Miniforge3"
 export CONDA_BIN_PATH="$CONDA_HOME/bin"
 export CONDA_ENV="$CONDA_HOME/etc/profile.d/conda.sh"
-export PATH="$CONDA_BIN_PATH:${PATH-}"
+export E2A_LOCAL_BIN="${E2A_LOCAL_BIN:-$HOME/.local/bin}"
+export CALIBRE_INSTALL_DIR="${E2A_CALIBRE_INSTALL_DIR:-$HOME/.local/opt/ebook2audiobook-calibre}"
+export PATH="$E2A_LOCAL_BIN:$CALIBRE_INSTALL_DIR/calibre:$HOME/.cargo/bin:$CONDA_BIN_PATH:${PATH-}"
 export PODMAN_DESKTOP="0"
 export DOCKER_DESKTOP="0"
 export DOCKER_DEVICE_STR=""
@@ -47,6 +49,7 @@ export RENDER_GID="${RENDER_GID:-}"
 export VIDEO_GID="${VIDEO_GID:-}"
 export DEVICE_INFO_STR=""
 export HOMEBREW_NO_ENV_HINTS="1"
+export E2A_ALLOW_SYSTEM_INSTALL="${E2A_ALLOW_SYSTEM_INSTALL:-0}"
 export SUDO="sudo"
 export SETVARS_CALL=""
 export ETVARS_ARGS=""
@@ -196,6 +199,11 @@ if [[ -n "${arguments[headless]+exists}" && ! -n "${arguments[script_mode]+exist
 		fi
 	}
 	if [[ -n "${USER:-}" ]] && ! user_in_group "$APP_GROUP"; then
+		if [[ "$E2A_ALLOW_SYSTEM_INSTALL" != "1" ]]; then
+			echo "ERROR: headless mode requires membership in the checkout group."
+			echo "Set E2A_ALLOW_SYSTEM_INSTALL=1 to allow the required group change, then retry."
+			exit 1
+		fi
 		echo "Adding $USER to group $APP_GROUP (requires sudo)..."
 		if [[ "$OSTYPE" == "darwin"* ]]; then
 			sudo dseditgroup -o edit -a "$USER" -t user "$APP_GROUP"
@@ -468,6 +476,7 @@ check_required_programs() {
 		# Normalize special binaries
 		[[ "$program" == "nodejs" ]] && bin="node"
 		[[ "$program" == "rust" ]]   && bin="rustc"
+		[[ "$program" == "calibre" && "${OSTYPE-}" != darwin* ]] && bin="ebook-convert"
 		# Special case: tesseract OCR
 		if [[ "$program" == "tesseract" || "$program" == "tesseract-ocr" ]]; then
 			bin="tesseract"
@@ -502,7 +511,73 @@ check_required_programs() {
 	(( ${#programs_missing[@]} == 0 ))
 }
 
+function install_user_rust {
+	if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+		return 0
+	fi
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+		return 1
+	fi
+	local rustup_tmp
+	rustup_tmp="$(mktemp)" || return 1
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL "$RUST_INSTALLER_URL" -o "$rustup_tmp" || { rm -f "$rustup_tmp"; return 1; }
+	else
+		wget -nv -O "$rustup_tmp" "$RUST_INSTALLER_URL" || { rm -f "$rustup_tmp"; return 1; }
+	fi
+	sh "$rustup_tmp" -y || { rm -f "$rustup_tmp"; return 1; }
+	rm -f "$rustup_tmp"
+	if [[ -f "$HOME/.cargo/env" ]]; then
+		source "$HOME/.cargo/env"
+	fi
+	export PATH="$HOME/.cargo/bin:$PATH"
+}
+
+function install_user_calibre {
+	if command -v ebook-convert >/dev/null 2>&1; then
+		return 0
+	fi
+	if [[ "${OSTYPE-}" == darwin* ]]; then
+		return 1
+	fi
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+		echo "Calibre is missing, and neither curl nor wget is available for its user-local installer."
+		return 1
+	fi
+	echo -e "\e[33mInstalling Calibre in $CALIBRE_INSTALL_DIR (user-local, isolated)…\e[0m"
+	local calibre_tmp
+	calibre_tmp="$(mktemp)" || return 1
+	if command -v wget >/dev/null 2>&1; then
+		wget -nv -O "$calibre_tmp" "$CALIBRE_INSTALLER_URL" || { rm -f "$calibre_tmp"; return 1; }
+	else
+		curl -fsSL "$CALIBRE_INSTALLER_URL" -o "$calibre_tmp" || { rm -f "$calibre_tmp"; return 1; }
+	fi
+	sh "$calibre_tmp" install_dir="$CALIBRE_INSTALL_DIR" isolated=y || { rm -f "$calibre_tmp"; return 1; }
+	rm -f "$calibre_tmp"
+	export PATH="$CALIBRE_INSTALL_DIR/calibre:$PATH"
+	command -v ebook-convert >/dev/null 2>&1
+}
+
 install_programs() {
+	if [[ "${OSTYPE-}" != darwin* ]]; then
+		if [[ " ${programs_missing[*]} " == *" calibre "* ]]; then
+			install_user_calibre || true
+		fi
+	fi
+	if [[ " ${programs_missing[*]} " == *" rust "* ]] || [[ " ${programs_missing[*]} " == *" rustc "* ]] || [[ " ${programs_missing[*]} " == *" cargo "* ]]; then
+		install_user_rust || true
+	fi
+	if check_required_programs "${HOST_PROGRAMS[@]}"; then
+		return 0
+	fi
+	if [[ "$E2A_ALLOW_SYSTEM_INSTALL" != "1" ]]; then
+		echo "Missing required programs: ${programs_missing[*]}"
+		echo "No system or Homebrew installation was run."
+		echo "To explicitly allow host package installation, rerun with:"
+		echo "  E2A_ALLOW_SYSTEM_INSTALL=1 $0"
+		return 1
+	fi
+
 	if [[ "${OSTYPE-}" == darwin* ]]; then
 		echo -e "\e[33mInstalling required programs…\e[0m"
 		PACK_MGR="brew install --force"
@@ -576,7 +651,7 @@ EOF
 		fi
 	fi
 	for program in "${programs_missing[@]}"; do
-		if [[ "$program" == "calibre" ]]; then		
+		if [[ "$program" == "calibre" ]]; then
 			if command -v $program >/dev/null 2>&1; then
 				echo -e "\e[32m=============== Calibre OK! ===============\e[0m"
 			else
@@ -595,13 +670,13 @@ EOF
 					fi
 					rm -f "$tmp"
 				fi
-				eval "$SUDO $PACK_MGR $program $PACK_MGR_OPTIONS"				
+				eval "$SUDO $PACK_MGR $program $PACK_MGR_OPTIONS"
 				if command -v $program >/dev/null 2>&1; then
 					echo -e "\e[32m=============== $program OK! ===============\e[0m"
 				else
 					echo -e "\e[31m=============== $program failed.\e[0m"
 				fi
-			fi	
+			fi
 		elif [[ "$program" == "rust" || "$program" == "rustc" ]]; then
 			RUSTUP_TMP="$(mktemp)"
 			curl -fL "$RUST_INSTALLER_URL" -o "$RUSTUP_TMP" || return 1
@@ -916,7 +991,7 @@ build_docker_image() {
 
 	local cmd_options=""
 	local py_vers
-	
+
 	# Base-image Python MUST match the wheel ABI in the device profile: derive it from
 	# pyvenv in $ARG (the single source of truth), not from $DEVICE_TAG.
 	py_vers="$(printf '%s' "$ARG" | python3 -c 'import json,sys; v=json.load(sys.stdin).get("pyvenv"); print(f"{v[0]}.{v[1]}" if v else "")' 2>/dev/null)"
@@ -953,7 +1028,7 @@ build_docker_image() {
 		*)		COMPOSE_PROFILES=cpu ;;
 	esac
 	export COMPOSE_PROFILES
-	
+
 	get_dri_gids
 	SERVICE="ebook2audiobook-${COMPOSE_PROFILES}"
 
@@ -1037,7 +1112,7 @@ build_docker_image() {
 		echo "	GUI mode:"
 		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" ${cmd_options} --rm -it -p 7860:7860 $DOCKER_IMG_NAME"
 		echo "	Headless mode:"
-		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" -v \"/my/real/ebooks/folder/absolute/path:/app/custom_ebooks\" -v \"/my/real/output/folder/absolute/path:/app/audiobooks\" ${cmd_options} --rm -it -p 7860:7860 $DOCKER_IMG_NAME --headless --ebook /app/custom_ebooks/myfile.pdf [--voice /app/my/voicepath/voice.mp3 etc..]"		
+		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" -v \"/my/real/ebooks/folder/absolute/path:/app/custom_ebooks\" -v \"/my/real/output/folder/absolute/path:/app/audiobooks\" ${cmd_options} --rm -it -p 7860:7860 $DOCKER_IMG_NAME --headless --ebook /app/custom_ebooks/myfile.pdf [--voice /app/my/voicepath/voice.mp3 etc..]"
 	fi
 }
 
