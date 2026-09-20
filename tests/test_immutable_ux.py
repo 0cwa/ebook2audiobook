@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -51,17 +52,68 @@ def write_tripwire(directory: Path, name: str, log: Path) -> None:
     path.chmod(0o755)
 
 
-def write_fake_rootless_podman(directory: Path) -> None:
+def write_fake_rootless_podman(
+    directory: Path, *, report: str = "true", diagnostic: str = "", info_status: int = 0
+) -> None:
     path = directory / "podman"
     path.write_text(
         "#!/bin/sh\n"
-        "if [ \"${1:-}\" = info ]; then printf 'true\\n'; exit 0; fi\n"
+        "if [ \"${1:-}\" = info ]; then\n"
+        f"  printf '%s\\n' {shlex.quote(report)}\n"
+        f"  printf '%s' {shlex.quote(diagnostic)} >&2\n"
+        f"  exit {info_status}\n"
+        "fi\n"
         "if [ \"${1:-}\" = compose ] && [ \"${2:-}\" = version ]; then exit 0; fi\n"
         "if [ \"${1:-}\" = compose ]; then printf 'services: {}\\n'; exit 0; fi\n"
         "exit 97\n",
         encoding="utf-8",
     )
     path.chmod(0o755)
+
+
+def run_rootless_probe(*, report: str, diagnostic: str = "", info_status: int = 0):
+    with tempfile.TemporaryDirectory(prefix="immutable-rootless-", dir=REPO.parent) as temp:
+        root = Path(temp)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        write_fake_rootless_podman(
+            fake_bin, report=report, diagnostic=diagnostic, info_status=info_status
+        )
+        return run(
+            [str(CONTAINER_LAUNCHER), "setup", "--no-build", "--data-root", str(root / "data")],
+            {
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "E2A_COMPOSE_FILE": "",
+                "E2A_COMPOSE_PROJECT_NAME": "",
+            },
+        )
+
+
+def test_rootless_probe_accepts_true_with_stderr_warning() -> None:
+    warning = 'WARNING: "/" is not a shared mount\n'
+    result = run_rootless_probe(report="true", diagnostic=warning)
+    assert result.returncode == 0, result.stderr
+    assert "image build was skipped" in result.stdout
+    assert warning in result.stderr
+
+
+def test_rootless_probe_reports_info_failure_even_with_true_stdout() -> None:
+    result = run_rootless_probe(
+        report="true", diagnostic="cannot open container storage\n", info_status=125
+    )
+    assert result.returncode == 1
+    assert "cannot open container storage" in result.stderr
+    assert "podman could not be queried" in result.stderr
+    assert "podman is not rootless" not in result.stderr
+    assert "image build was skipped" not in result.stdout
+
+
+def test_rootless_probe_rejects_rootful_false() -> None:
+    result = run_rootless_probe(report="false")
+    assert result.returncode == 1
+    assert "podman is not rootless (reported false)" in result.stderr
+    assert "podman could not be queried" not in result.stderr
+    assert "image build was skipped" not in result.stdout
 
 
 def write_fake_unowned_stat(directory: Path) -> None:

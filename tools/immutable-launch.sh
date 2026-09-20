@@ -220,7 +220,8 @@ prepare_data_root() {
 rootless_podman() {
 	command -v podman >/dev/null 2>&1 || die "podman is not available; install it through the host's approved user-space method"
 	local report
-	if ! report="$(podman info --format '{{.Host.Security.Rootless}}' 2>&1)"; then
+	# Parse stdout only; Podman warnings and errors remain visible on stderr.
+	if ! report="$(podman info --format '{{.Host.Security.Rootless}}')"; then
 		die "podman could not be queried without changing host policy: $report"
 	fi
 	report="$(printf '%s' "$report" | tr -d '[:space:]')"
