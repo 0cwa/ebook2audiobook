@@ -16,6 +16,17 @@ Use this tool responsibly and in accordance with all applicable laws.
 
 [![Quick Start](https://img.shields.io/badge/Quick%20Start-blue?style=for-the-badge)](#instructions)
 
+### Immutable Linux without sudo
+
+For Fedora Atomic, Universal Blue, openSUSE Aeon, and other immutable Linux
+desktops, use the rootless CPU container path with an external user-owned data
+root. It does not install host packages or change security policy. Start with
+the [immutable Linux guide](docs/immutable-linux.md) and its read-only
+preflight. The guide covers the current `diagnose`, `setup`, `run`, `update`,
+and `uninstall` actions; the CPU browser is bound to localhost. The native
+launcher remains a best-effort path when the host already provides all
+dependencies.
+
 [![Docker Build](https://github.com/DrewThomasson/ebook2audiobook/actions/workflows/Docker-Build.yml/badge.svg)](https://github.com/DrewThomasson/ebook2audiobook/actions/workflows/Docker-Build.yml)  [![Download](https://img.shields.io/badge/Download-Now-blue.svg)](https://github.com/DrewThomasson/ebook2audiobook/releases/latest)   
 
 
@@ -87,6 +98,7 @@ https://github.com/user-attachments/assets/81c4baad-117e-4db5-ac86-efc2b7fea921
   - [Run Remotely](#run-remotely)
   - [Docker](#docker)
     - [Steps to Run](#docker)
+- [Immutable Linux without sudo](#immutable-linux-without-sudo)
   
 - [Cloned Voices](#cloned-voices)
 - [Fine Tuned TTS models](#fine-tuned-tts-models)
@@ -178,6 +190,7 @@ So you should first remove manually any text you don't want to be converted in a
      ```bash
      ./ebook2audiobook.command
      ```
+     <i>On immutable Linux, use the [rootless CPU guide](docs/immutable-linux.md). The native launcher is best effort and does not silently install host dependencies.</i>
      <i>Note for MacOS users: homebrew is installed to install missing programs.</i>
      
    - **Mac Launcher**  

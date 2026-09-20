@@ -1,0 +1,113 @@
+{
+  "manifest_version": "1.0.0",
+  "installer_id": "ebook2audiobook-immutable-rootless-cpu",
+  "scope": "rootless-container-cpu",
+  "supported_targets": [
+    {
+      "os": "Linux",
+      "architectures": ["x86_64", "aarch64"],
+      "runtime": "rootless Podman with podman compose or podman-compose",
+      "status": "contract-supported; row-specific host evidence required"
+    }
+  ],
+  "deferred_targets": [
+    "GPU device profiles",
+    "host driver installation",
+    "Flatpak packaging",
+    "per-distribution native packages",
+    "Windows and macOS immutable equivalents"
+  ],
+  "source_inputs": [
+    {
+      "id": "application-source",
+      "locator": "operator-selected local checkout",
+      "version": "git revision supplied by the operator",
+      "verification": "Before setup or update, record git rev-parse HEAD in a small operator-local record outside the checkout; the launcher does not fetch, rewrite, or create a receipt for that checkout"
+    },
+    {
+      "id": "container-build-inputs",
+      "locator": "Dockerfile and its declared base/package sources",
+      "version": "resolved by the selected checkout",
+      "verification": "the operator must record the built image ID/digest and build log in the same local record for a release; this lane adds no unverified downloader"
+    }
+  ],
+  "build": {
+    "environment": "rootless Podman user storage",
+    "network": "needed by the existing Dockerfile when the base image or packages are not cached",
+    "host_mutations": "none; no sudo, package manager, user/group mutation, driver installation, or security-policy change",
+    "commands": [
+      "tools/immutable-launch.sh setup --data-root <absolute-user-owned-root>",
+      "tools/immutable-launch.sh update --data-root <absolute-user-owned-root>"
+    ],
+    "outputs": ["rootless Podman image", "external user-owned data root"]
+  },
+  "runtime_dependencies": [
+    "rootless Podman",
+    "podman compose or podman-compose",
+    "network for first image/model acquisition",
+    "a host browser for the HTTP GUI (optional for headless use)"
+  ],
+  "artifacts": [
+    {
+      "source": "podman image localhost/athomasson2/ebook2audiobook:cpu",
+      "destination": "rootless Podman user storage",
+      "type": "container-image",
+      "ownership": "user"
+    },
+    {
+      "source": "external data root/{ebooks,audiobooks,models,voices,run,tmp}",
+      "destination": "the same user-selected paths",
+      "type": "persistent-directories",
+      "ownership": "user"
+    }
+  ],
+  "persistent_state": {
+    "paths": [
+      "$E2A_DATA_ROOT/ebooks",
+      "$E2A_DATA_ROOT/audiobooks",
+      "$E2A_DATA_ROOT/models",
+      "$E2A_DATA_ROOT/voices",
+      "$E2A_DATA_ROOT/run",
+      "$E2A_DATA_ROOT/tmp"
+    ],
+    "upgrade": "retain; image rebuilds never mount the checkout's data directories",
+    "uninstall": "retain by default; runtime cleanup is separate from user data deletion"
+  },
+  "activation": {
+    "strategy": "rootless compose profile cpu with explicit E2A_DATA_ROOT",
+    "entry_points": [
+      "tools/immutable-launch.sh run --data-root <absolute-user-owned-root>",
+      "ebook2audiobook.command --container run --data-root <absolute-user-owned-root>"
+    ]
+  },
+  "verification": [
+    {
+      "id": "read-only-preflight",
+      "criterion": "--diagnose produces text or JSON without checkout writes, network access, package installation, or privilege escalation",
+      "command": "./ebook2audiobook.command --diagnose --json"
+    },
+    {
+      "id": "rootless-cpu-config",
+      "criterion": "The CPU compose profile expands with an explicit external data root and no privileged or security-label relaxation",
+      "command": "E2A_DATA_ROOT=<absolute-user-owned-root> podman compose -f podman-compose.yml --profile cpu config"
+    },
+    {
+      "id": "external-data-preservation",
+      "criterion": "A marker in the external data root remains after image update and runtime uninstall",
+      "command": "tools/immutable-launch.sh update --data-root <absolute-user-owned-root>"
+    }
+  ],
+  "rollback": {
+    "strategy": "manual rollback only: use the operator-local source/image record to restore a prior image or rebuild the prior source revision; retain the user-owned data root",
+    "host_rollback": "none required because the installer does not change host policy"
+  },
+  "uninstall": {
+    "source_of_truth": "selected Compose project plus this manifest and the operator-local source/image record; no installer receipt is written",
+    "default": "tools/immutable-launch.sh uninstall --preview",
+    "postconditions": [
+      "--apply removes only this rootless compose project's containers and network",
+      "external ebooks, audiobooks, models, voices, run state, and temporary data remain",
+      "no host package, group, security setting, or source-checkout file is removed"
+    ]
+  }
+}

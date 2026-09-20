@@ -5,7 +5,7 @@
 # guarantee that under podman: the `localhost/` prefix on the image name (a
 # fully-qualified local reference podman will never resolve against a registry)
 # and `pull_policy: never`. Only the FROM base
-# (docker.io/library/python:<ver>-slim-bookworm) still comes from a registry.
+# (docker.io/library/python:<ver>-slim-trixie) still comes from a registry.
 #
 # On Linux/macOS the image is built by ebook2audiobook.command --script_mode
 # build_docker with DOCKER_MODE=podman, which calls plain `podman build` with
@@ -24,13 +24,14 @@
 #
 #   ./ebook2audiobook.command --script_mode build_docker --docker_mode podman
 #
-# Then run:
+# Then run. Every profile requires an absolute external data root; the example
+# keeps application state out of the checkout:
 #
-#   DEVICE_TAG=cpu      podman-compose -f podman-compose.yml --profile cpu    up
-#   DEVICE_TAG=cu130    podman-compose -f podman-compose.yml --profile cuda   up
-#   DEVICE_TAG=jetson51 podman-compose -f podman-compose.yml --profile jetson up
-#   DEVICE_TAG=rocm     podman-compose -f podman-compose.yml --profile rocm   up
-#   DEVICE_TAG=xpu      podman-compose -f podman-compose.yml --profile xpu    up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=cpu      podman-compose -f podman-compose.yml --profile cpu    up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=cu130    podman-compose -f podman-compose.yml --profile cuda   up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=jetson51 podman-compose -f podman-compose.yml --profile jetson up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=rocm     podman-compose -f podman-compose.yml --profile rocm   up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=xpu      podman-compose -f podman-compose.yml --profile xpu    up
 #
 # If your podman-compose rejects `pull_policy: never`, drop the line — the
 # localhost/ prefix already makes a registry pull impossible.
@@ -40,7 +41,7 @@
 # key, so the build is always native (no silent qemu round trip on the Jetson).
 #
 # Always confirm a profile expands correctly before running it:
-#   DEVICE_TAG=rocm podman-compose --profile rocm config
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=rocm podman-compose --profile rocm config
 
 x-common: &common
   image: localhost/athomasson2/ebook2audiobook:${DEVICE_TAG:-cpu}
@@ -70,14 +71,16 @@ x-common: &common
   stdin_open: true
   ports:
     - "7860:7860"
-  security_opt:
-    - label=disable
+  # Every writable path is outside the checkout. Do not add :Z or
+  # label=disable here: the rootless path must not relabel data or weaken the
+  # host's SELinux policy. The launcher always supplies an absolute root.
   volumes:
-    - ./ebooks:/app/ebooks:rw
-    - ./audiobooks:/app/audiobooks:rw
-    - ./models:/app/models:rw
-    - ./voices:/app/voices:rw
-    - ./tmp:/app/tmp:rw
+    - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/ebooks:/app/ebooks:rw"
+    - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/audiobooks:/app/audiobooks:rw"
+    - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/models:/app/models:rw"
+    - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/voices:/app/voices:rw"
+    - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/run:/app/run:rw"
+    - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/tmp:/app/tmp:rw"
   restart: unless-stopped
 
 services:
@@ -85,6 +88,10 @@ services:
   ebook2audiobook-cpu:
     <<: *common
     profiles: [cpu]
+    # The immutable CPU guide serves the browser only on the local host.
+    # Accelerator profiles retain the common binding below.
+    ports:
+      - "127.0.0.1:7860:7860"
 
   # --- NVIDIA discrete (amd64 dGPU, or arm64 SBSA) via CDI -------------------
   # Requires a generated CDI spec on the host:
@@ -114,9 +121,11 @@ services:
     devices:
       - /dev/kfd
       - /dev/dri
+    # These defaults only keep Compose validation usable when the CPU profile
+    # is selected. A real ROCm run must provide the host's actual group IDs.
     group_add:
       - "${VIDEO_GID:-44}"
-      - "${RENDER_GID:-44}"
+      - "${RENDER_GID:-45}"
 
   # --- Intel XPU (oneAPI / IPEX) --------------------------------------------
   ebook2audiobook-xpu:
