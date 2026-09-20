@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -112,11 +114,52 @@ class ChatterboxAdapterTests(unittest.TestCase):
             stream.setframerate(24000)
             stream.writeframes(b"\x00\x00" * 240)
 
-    def test_registration_registers_chatterbox_without_importing_runtime_package(self):
-        self.assertIn("chatterbox", TTSRegistry.ENGINES)
+    def test_registration_is_isolated_without_importing_runtime_package(self):
+        self.assertIs(
+            chatterbox_module._test_registry["chatterbox"],
+            chatterbox_module.Chatterbox,
+        )
+        self.assertIsNot(
+            TTSRegistry.ENGINES.get("chatterbox"),
+            chatterbox_module.Chatterbox,
+        )
         self.assertNotIn("chatterbox", sys.modules)
         from lib.conf_models import default_engine_settings, TTS_ENGINES
         self.assertIn("watermark", default_engine_settings[TTS_ENGINES["CHATTERBOX"]]["notice"])
+
+    def test_preloaded_production_adapter_is_reloaded_for_isolated_import(self):
+        probe = """
+import importlib
+import sys
+
+from lib.classes.tts_registry import TTSRegistry
+
+production = importlib.import_module("lib.classes.tts_engines.chatterbox")
+production_registry = TTSRegistry.ENGINES
+production_registry_snapshot = dict(production_registry)
+production_class = production.Chatterbox
+production_presets_loader = production.load_engine_presets
+
+from components.Chatterbox.tests import _adapter_loader
+
+loaded = _adapter_loader.load_chatterbox_adapter()
+assert loaded is not production
+assert sys.modules["lib.classes.tts_engines.chatterbox"] is production
+assert TTSRegistry.ENGINES is production_registry
+assert TTSRegistry.ENGINES == production_registry_snapshot
+assert TTSRegistry.ENGINES["chatterbox"] is production_class
+assert production.load_engine_presets is production_presets_loader
+assert loaded._test_registry["chatterbox"] is loaded.Chatterbox
+"""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", probe],
+            cwd=Path(__file__).resolve().parents[3],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3])},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_language_and_device_rejection_are_explicit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -247,6 +290,7 @@ class ChatterboxAdapterTests(unittest.TestCase):
                 }
                 with (
                     self.subTest(state=state),
+                    patch.object(TTSRegistry, "ENGINES", chatterbox_module._test_registry),
                     patch.object(chatterbox_module, "chatterbox_host_status", return_value=status),
                     patch.object(chatterbox_module, "ChatterboxClient") as client,
                     self.assertRaisesRegex(ValueError, error),
