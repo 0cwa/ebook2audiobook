@@ -74,6 +74,23 @@ def _conversion_session(root: Path) -> dict:
 
 
 class CoreLifecycleTests(unittest.TestCase):
+    def test_chatterbox_compatibility_is_target_and_device_aware(self):
+        chatterbox = core.TTS_ENGINES["CHATTERBOX"]
+        with (
+            patch("lib.conf_models.platform.system", return_value="Linux"),
+            patch("lib.conf_models.platform.machine", return_value="x86_64"),
+        ):
+            self.assertIn(chatterbox, core.get_compatible_tts_engines("eng", "cpu"))
+            self.assertIn(chatterbox, core.get_compatible_tts_engines("eng"))
+            self.assertNotIn(chatterbox, core.get_compatible_tts_engines("eng", "cuda"))
+        with patch("lib.conf_models.platform.system", return_value="Darwin"):
+            self.assertNotIn(chatterbox, core.get_compatible_tts_engines("eng", "cpu"))
+        with (
+            patch("lib.conf_models.platform.system", return_value="Linux"),
+            patch("lib.conf_models.platform.machine", return_value="aarch64"),
+        ):
+            self.assertNotIn(chatterbox, core.get_compatible_tts_engines("eng", "cpu"))
+
     def test_unload_tts_manager_closes_engine_and_evicts_its_cache(self):
         engine = _FakeEngine()
         manager = SimpleNamespace(engine=engine)

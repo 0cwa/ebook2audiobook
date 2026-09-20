@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 from pathlib import Path
 import sys
 import tempfile
@@ -12,44 +11,13 @@ import unittest
 import wave
 from unittest.mock import patch
 
+from components.Chatterbox.tests._adapter_loader import load_chatterbox_adapter
 from lib.classes.tts_registry import TTSRegistry
 
 
-def _load_chatterbox_adapter():
-    """Load only this adapter without importing unrelated optional engines."""
-
-    repository = Path(__file__).resolve().parents[3]
-    package_name = "lib.classes.tts_engines"
-    package = types.ModuleType(package_name)
-    package.__path__ = [str(repository / "lib/classes/tts_engines")]
-    sys.modules[package_name] = package
-
-    from lib.conf_models import SML_TAG_PATTERN
-
-    utils_name = "lib.classes.tts_engines.common.utils"
-    utils = types.ModuleType(utils_name)
-
-    class TTSUtils:
-        @staticmethod
-        def _split_sentence_on_sml(sentence: str) -> list[str]:
-            parts: list[str] = []
-            last = 0
-            for match in SML_TAG_PATTERN.finditer(sentence):
-                start, end = match.span()
-                if start > last:
-                    parts.append(sentence[last:start])
-                parts.append(match.group(0))
-                last = end
-            if last < len(sentence):
-                parts.append(sentence[last:])
-            return parts
-
-    utils.TTSUtils = TTSUtils
-    with patch.dict(sys.modules, {utils_name: utils}):
-        return importlib.import_module("lib.classes.tts_engines.chatterbox")
-
-
-chatterbox_module = _load_chatterbox_adapter()
+chatterbox_module = load_chatterbox_adapter()
+ORIGINAL_HOST_STATUS = chatterbox_module.chatterbox_host_status
+ORIGINAL_RUNTIME_DETAILS = chatterbox_module._runtime_details
 
 
 class FakeClient:
@@ -92,6 +60,27 @@ class ChatterboxAdapterTests(unittest.TestCase):
         FakeClient.instances.clear()
         FakeClient.write_valid_audio = True
         FakeClient.cancel_immediately = False
+        readiness = patch.object(
+            chatterbox_module,
+            "chatterbox_host_status",
+            return_value={"ok": True, "supported": True, "status": "ready", "error": None},
+        )
+        readiness.start()
+        self.addCleanup(readiness.stop)
+        runtime = patch.object(
+            chatterbox_module,
+            "_runtime_details",
+            return_value=chatterbox_module._RuntimeDetails(
+                interpreter=Path("/approved/env/bin/python"),
+                environment={},
+                manifest_path=Path("/approved/runtime-manifest.json"),
+                model_root=Path("/approved/model"),
+                manifest_root=Path("/approved"),
+                model_revision="5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+            ),
+        )
+        runtime.start()
+        self.addCleanup(runtime.stop)
 
     @staticmethod
     def session(root: Path, language: str = "eng", *, voice: str | None = None, device: str = "cpu"):
@@ -136,6 +125,159 @@ class ChatterboxAdapterTests(unittest.TestCase):
                 chatterbox_module.Chatterbox(self.session(root, "xx"))
             with self.assertRaisesRegex(ValueError, "CPU only"):
                 chatterbox_module.Chatterbox(self.session(root, device="cuda"))
+
+    def test_static_target_contract_is_linux_x86_64_cpu_only(self):
+        from lib.conf_models import chatterbox_target_status
+
+        self.assertTrue(chatterbox_target_status("cpu", system="linux", architecture="x86_64")["supported"])
+        self.assertTrue(chatterbox_target_status("cpu", system="linux", architecture="amd64")["supported"])
+        for device, system, architecture in (
+            ("cuda", "linux", "x86_64"),
+            ("cpu", "darwin", "x86_64"),
+            ("cpu", "linux", "aarch64"),
+        ):
+            status = chatterbox_target_status(device, system=system, architecture=architecture)
+            self.assertFalse(status["supported"])
+            self.assertIn("Linux x86_64/amd64 CPU only", status["error"])
+
+    def test_real_host_status_rejects_unsupported_os_and_arch_before_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for system, architecture in (("Darwin", "x86_64"), ("Linux", "aarch64")):
+                with (
+                    self.subTest(system=system, architecture=architecture),
+                    patch.object(chatterbox_module, "chatterbox_host_status", ORIGINAL_HOST_STATUS),
+                    patch("lib.conf_models.platform.system", return_value=system),
+                    patch("lib.conf_models.platform.machine", return_value=architecture),
+                    patch.object(chatterbox_module, "ChatterboxClient") as client,
+                    self.assertRaisesRegex(ValueError, "supports Linux x86_64/amd64 CPU only"),
+                ):
+                    chatterbox_module.Chatterbox(self.session(root))
+                client.assert_not_called()
+
+    def test_host_status_consumes_runtime_record_without_paths_or_capacity_work(self):
+        from components.Chatterbox.runtime import runtime as runtime_module
+
+        runtime_status = {
+            "ok": True,
+            "supported": True,
+            "status": "ready",
+            "artifact_status": "ready",
+            "capacity_status": "not_required",
+            "error": None,
+            "interpreter": Path("/approved/env/bin/python"),
+            "environment": {},
+            "manifest_path": Path("/approved/runtime-manifest.json"),
+            "verified_model_root": Path("/approved/model"),
+            "runtime_root": Path("/approved"),
+            "manifest_root": Path("/approved"),
+            "model_revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+        }
+        with (
+            patch.object(chatterbox_module, "chatterbox_host_status", ORIGINAL_HOST_STATUS),
+            patch.object(chatterbox_module, "chatterbox_target_status", return_value={"supported": True, "status": "supported", "error": None}),
+            patch.object(runtime_module, "host_runtime_status", return_value=runtime_status),
+            patch.object(runtime_module, "calculate_storage_plan", side_effect=AssertionError("adapter must not inspect capacity")),
+        ):
+            status = ORIGINAL_HOST_STATUS({"device": "cpu"})
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["status"], "ready")
+        self.assertEqual(status["artifact_status"], "ready")
+        self.assertEqual(status["capacity_status"], "not_required")
+        self.assertNotIn("paths", status)
+
+    def test_host_status_preserves_missing_provisioning_repair_and_storage_states(self):
+        from components.Chatterbox.runtime import runtime as runtime_module
+
+        cases = (
+            ("missing", "sufficient", "runtime is missing"),
+            ("provisioning", "storage_budget_unknown", "storage_budget_unknown"),
+            ("repair_required", "not_checked", "model requires repair"),
+            ("missing", "insufficient_storage", "insufficient storage"),
+        )
+        for state, capacity_status, detail in cases:
+            runtime_status = {
+                "ok": False,
+                "supported": True,
+                "status": state,
+                "artifact_status": "missing" if state != "repair_required" else "repair_required",
+                "capacity_status": capacity_status,
+                "error": f"Chatterbox {detail}.",
+                "runtime": {"status": "missing"},
+                "model": {"status": "missing"},
+                "activation": {"status": "missing"},
+            }
+            with (
+                self.subTest(state=state, capacity_status=capacity_status),
+                patch.object(chatterbox_module, "chatterbox_host_status", ORIGINAL_HOST_STATUS),
+                patch.object(chatterbox_module, "chatterbox_target_status", return_value={"supported": True, "status": "supported", "error": None}),
+                patch.object(runtime_module, "host_runtime_status", return_value=runtime_status),
+            ):
+                status = ORIGINAL_HOST_STATUS({"device": "cpu"})
+            self.assertEqual(status["status"], state)
+            self.assertEqual(status["capacity_status"], capacity_status)
+            self.assertIn(detail, status["error"])
+
+    def test_unexpected_runtime_defect_is_not_mapped_to_repair_required(self):
+        from components.Chatterbox.runtime import runtime as runtime_module
+
+        with (
+            patch.object(chatterbox_module, "chatterbox_target_status", return_value={"supported": True, "status": "supported", "error": None}),
+            patch.object(runtime_module, "host_runtime_status", side_effect=AssertionError("programming defect")),
+            self.assertRaisesRegex(AssertionError, "programming defect"),
+        ):
+            ORIGINAL_HOST_STATUS({"device": "cpu"})
+
+    def test_direct_manager_rejects_all_nonready_states_before_worker(self):
+        from lib.classes.tts_manager import TTSManager
+
+        with tempfile.TemporaryDirectory() as directory:
+            for state, error in (
+                ("unsupported", "supports Linux x86_64/amd64 CPU only"),
+                ("missing", "runtime is missing"),
+                ("provisioning", "storage_budget_unknown"),
+                ("repair_required", "model requires repair"),
+            ):
+                status = {
+                    "ok": False,
+                    "supported": state != "unsupported",
+                    "status": state,
+                    "error": f"Chatterbox {error}.",
+                }
+                with (
+                    self.subTest(state=state),
+                    patch.object(chatterbox_module, "chatterbox_host_status", return_value=status),
+                    patch.object(chatterbox_module, "ChatterboxClient") as client,
+                    self.assertRaisesRegex(ValueError, error),
+                ):
+                    TTSManager({**self.session(Path(directory)), "tts_engine": "chatterbox"})
+                client.assert_not_called()
+
+    def test_runtime_details_ignore_python_override_and_use_receipt_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                patch.object(chatterbox_module, "_runtime_details", ORIGINAL_RUNTIME_DETAILS),
+                patch.object(
+                    chatterbox_module,
+                    "chatterbox_host_status",
+                    return_value={
+                        "ok": True,
+                        "status": "ready",
+                        "interpreter": root / "approved" / "env" / "bin" / "python",
+                        "environment": {"E2A_ROOT": str(root)},
+                        "manifest_path": root / "runtime-manifest.json",
+                        "verified_model_root": root / "approved" / "model",
+                        "manifest_root": root / "approved",
+                        "model_revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+                    },
+                ),
+                patch.dict("os.environ", {"E2A_CHATTERBOX_PYTHON": "/tmp/unapproved-python"}),
+            ):
+                details = chatterbox_module._runtime_details()
+            self.assertEqual(details.interpreter, root / "approved" / "env" / "bin" / "python")
+            self.assertNotEqual(str(details.interpreter), "/tmp/unapproved-python")
 
     def test_request_translation_removes_sml_and_preserves_voice_and_silence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -229,6 +371,30 @@ class ChatterboxAdapterTests(unittest.TestCase):
             self.assertEqual(client.kwargs["model"]["revision"], revision)
             self.assertEqual(client.requests[0]["model"]["revision"], revision)
             self.assertNotEqual(client.requests[0]["model"]["revision"], "immutable")
+
+    def test_client_ignores_arbitrary_worker_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside_worker = root / "outside-worker.py"
+            outside_worker.write_text("raise SystemExit('unapproved worker executed')\n", encoding="utf-8")
+            engine = chatterbox_module.Chatterbox(self.session(root))
+            output = root / "process" / "chapters" / "sentences" / "0.flac"
+            approved_worker = (
+                Path(chatterbox_module.__file__).resolve().parents[3]
+                / "components"
+                / "Chatterbox"
+                / "worker.py"
+            )
+            with (
+                patch.dict("os.environ", {"E2A_CHATTERBOX_WORKER": str(outside_worker)}),
+                patch.object(chatterbox_module, "ChatterboxClient", FakeClient),
+                patch.object(chatterbox_module, "_audio_file_is_valid", return_value=(True, None)),
+            ):
+                success, error = engine.convert(str(output), "Hello world.")
+            self.assertTrue(success)
+            self.assertIsNone(error)
+            self.assertEqual(FakeClient.instances[0].kwargs["worker_path"], approved_worker)
+            self.assertNotEqual(FakeClient.instances[0].kwargs["worker_path"], outside_worker)
 
     def test_invalid_output_is_rejected_and_aborts_worker(self):
         with tempfile.TemporaryDirectory() as directory:

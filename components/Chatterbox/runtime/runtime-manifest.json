@@ -1,10 +1,22 @@
 {
-  "manifest_version": "1.0.0",
+  "manifest_version": "2.0.0",
+  "runtime_contract_version": "2.0.0",
   "target": {
     "os": "linux",
     "architecture": "x86_64",
     "python": "3.11.x",
     "backend": "cpu"
+  },
+  "product": {
+    "profile": "chatterbox-multilingual-v2-cpu",
+    "worker_protocol": 1
+  },
+  "model_paths": {
+    "legacy_huggingface_cache_namespace": "$E2A_MODELS_DIR/tts/chatterbox",
+    "verified_model_objects": "$XDG_DATA_HOME/ebook2audiobook/chatterbox/models/objects/<model-fingerprint>/<transaction-id>",
+    "canonical_snapshot_within_object": "snapshot",
+    "publication_authority": "model receipt binds exactly one immutable object snapshot",
+    "note": "Legacy Hugging Face cache content is preserved but never adopted or exposed to the worker as a verified model."
   },
   "package_inputs": {
     "chatterbox-tts": "0.1.7",
@@ -28,22 +40,31 @@
   "sources": {
     "chatterbox_package": {
       "locator": "https://files.pythonhosted.org/packages/54/37/11a7f06983bfd5ebba71eb2caa6660941b17b31f3c49d4a5fe9e1e804d31/chatterbox_tts-0.1.7-py3-none-any.whl",
+      "filename": "chatterbox_tts-0.1.7-py3-none-any.whl",
       "version": "0.1.7",
-      "artifact_sha256": "83782500e3ad4e7c919132e9d7eb8755f29f57c5bde5ec48c655ca23a4eb113c"
+      "artifact_sha256": "83782500e3ad4e7c919132e9d7eb8755f29f57c5bde5ec48c655ca23a4eb113c",
+      "identity_role": "executable_artifact"
     },
     "chatterbox_source": {
       "locator": "https://github.com/resemble-ai/chatterbox",
-      "revision": "59bc590b3cad826e5d5987745bf6844627a21ad5"
+      "revision": "59bc590b3cad826e5d5987745bf6844627a21ad5",
+      "association_to_artifact": "unverified",
+      "identity_role": "provenance_only"
     },
     "perth": {
       "locator": "https://files.pythonhosted.org/packages/77/cc/73226dd776f8e9c2975f64f4efc22988fb37e5b185ba5cccd6f2e7196954/resemble_perth-1.0.1-py3-none-any.whl",
+      "filename": "resemble_perth-1.0.1-py3-none-any.whl",
+      "version": "1.0.1",
       "commit": "d6cc38cc9ab9da71c6b64d8c741bc13049eb881e",
-      "artifact_sha256": "65e9c37531b1a128a4a56226b75dece4521683cf3611b0b2a5ffe234f00c9342"
+      "artifact_sha256": "65e9c37531b1a128a4a56226b75dece4521683cf3611b0b2a5ffe234f00c9342",
+      "association_to_artifact": "unverified",
+      "identity_role": "executable_artifact_with_unverified_source_provenance"
     },
     "model": {
       "locator": "https://huggingface.co/ResembleAI/chatterbox",
       "variant": "multilingual-v2",
       "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+      "identity_role": "executable_model",
       "files": [
         {
           "path": "ve.pt",
@@ -85,12 +106,169 @@
     "generated_from": "requirements-cpu.in"
   },
   "storage": {
-    "min_free_bytes": 2147483648
+    "contract_version": "1.0.0",
+    "aggregation": "maximum_phase_peak_per_filesystem",
+    "phases": [
+      {
+        "name": "runtime_artifact_acquisition",
+        "buckets": [
+          {
+            "name": "package_download_and_cache_peak",
+            "destination": "environment",
+            "required_bytes": 503316480,
+            "measurement_status": "measured_clean_disposable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "runtime",
+              "path": "surface.cache",
+              "metric": "allocated_bytes",
+              "measured_bytes": 502280192,
+              "runs": 1,
+              "rounding": "ceil_to_1_MiB",
+              "basis": "inclusive upper bound: the observed surface.cache contains the complete verified 107-wheel input set, lock, and worker-data input; package acquisition cannot exceed this allocated cache surface"
+            }
+          }
+        ]
+      },
+      {
+        "name": "runtime_environment_construction",
+        "buckets": [
+          {
+            "name": "expanded_environment_high_water",
+            "destination": "environment",
+            "required_bytes": 2013265920,
+            "measurement_status": "measured_clean_disposable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "runtime",
+              "path": "environment.xdg_data",
+              "metric": "allocated_bytes",
+              "measured_bytes": 2012663808,
+              "runs": 1,
+              "rounding": "ceil_to_1_MiB"
+            }
+          },
+          {
+            "name": "environment_construction_transient_peak",
+            "destination": "environment",
+            "required_bytes": 1048576,
+            "measurement_status": "measured_clean_disposable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "runtime",
+              "path": "environment.xdg_runtime",
+              "metric": "allocated_bytes",
+              "measured_bytes": 4096,
+              "runs": 1,
+              "rounding": "ceil_to_1_MiB",
+              "basis": "the runtime phase exercised venv creation, offline pip installation, imports, and the Python 3.11 worker self-test; its worker temporary namespace never exceeded its directory allocation"
+            }
+          }
+        ]
+      },
+      {
+        "name": "model_acquisition",
+        "buckets": [
+          {
+            "name": "verified_model_files",
+            "destination": "verified_model_root",
+            "source": "model_files",
+            "credit_verified_files": true
+          },
+          {
+            "name": "model_download_staging_peak",
+            "destination": "verified_model_root",
+            "required_bytes": 0,
+            "measurement_status": "not_applicable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "model",
+              "path": "verified_model_root: dedicated staging namespace",
+              "metric": "dedicated_staging_allocated_bytes",
+              "measured_bytes": 0,
+              "runs": 1,
+              "basis": "acquire_model streamed each verified input directly to candidate/snapshot with exclusive creation; the eligible run published model and activation receipts and observed no separate staging namespace"
+            }
+          },
+          {
+            "name": "huggingface_xet_metadata_peak",
+            "destination": "verified_model_root",
+            "required_bytes": 0,
+            "measurement_status": "not_applicable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "model",
+              "path": "worker HF_XET_CACHE",
+              "metric": "xet_metadata_allocated_bytes",
+              "measured_bytes": 0,
+              "runs": 1,
+              "basis": "the product acquisition primitive is runtime.py _download_model_file using urllib.request, and the successful worker self-test loads the approved local snapshot; no Hugging Face Xet acquisition path is executed"
+            }
+          }
+        ]
+      },
+      {
+        "name": "activation_and_self_test",
+        "buckets": [
+          {
+            "name": "receipt_and_state_peak",
+            "destination": "state",
+            "required_bytes": 1048576,
+            "measurement_status": "measured_clean_disposable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "model",
+              "path": "environment.xdg_state",
+              "metric": "allocated_bytes",
+              "measured_bytes": 36864,
+              "runs": 1,
+              "rounding": "ceil_to_1_MiB"
+            }
+          },
+          {
+            "name": "runtime_temporary_peak",
+            "destination": "run",
+            "required_bytes": 95420416,
+            "measurement_status": "measured_clean_disposable",
+            "measurement_evidence": {
+              "schema": "ebook2audiobook.chatterbox-storage-measurement.v1",
+              "evidence_id": "eligible-local-tmp-20260920",
+              "report": "components/Chatterbox/runtime/measurement-evidence.json",
+              "phase": "model",
+              "path": "environment.xdg_runtime",
+              "metric": "allocated_bytes",
+              "measured_bytes": 94810112,
+              "runs": 1,
+              "rounding": "ceil_to_1_MiB"
+            }
+          }
+        ]
+      }
+    ]
   },
   "network": {
+    "runtime_acquisition_urls": [
+      "https://pypi.org/simple/chatterbox-tts/",
+      "https://download.pytorch.org/whl/cpu/torch/"
+    ],
     "first_acquisition_urls": [
       "https://pypi.org/simple/chatterbox-tts/",
       "https://download.pytorch.org/whl/cpu/torch/"
+    ],
+    "model_acquisition_urls": [
+      "https://huggingface.co/ResembleAI/chatterbox"
     ]
   },
   "validation": {
@@ -103,10 +281,19 @@
     "worker_self_test_args": ["--self-test"]
   },
   "identity_policy": {
-    "package_artifact_sha256": "required",
-    "chatterbox_source_revision": "required immutable revision",
-    "perth_commit_and_artifact_sha256": "required immutable commit or wheel",
-    "model_revision_and_file_sha256": "required immutable snapshot and file set",
+    "runtime_identity": "runtime contract version, target, lock SHA-256, and selected wheel filenames, versions, and SHA-256 values",
+    "artifact_download_locators_are_identity_bearing": false,
+    "model_identity": "repository, variant, immutable revision, and exact file paths, sizes, and SHA-256 values",
+    "activation_identity": "runtime fingerprint, model fingerprint, product profile, and worker protocol",
+    "source_provenance": "source commits are inspected references with unverified association to published wheels",
+    "policy_provenance_storage_excluded_from_executable_fingerprints": true,
     "mutable_values_forbidden": ["master", "main", "latest", "unresolved"]
+  },
+  "receipt_contract": {
+    "runtime": "artifact-bound readiness implemented by U2",
+    "model": "artifact-bound exact six-file verified snapshot readiness implemented by U3",
+    "activation": "runtime and model receipt hashes plus local-only model-load self-test implemented by U3",
+    "complete_product_readiness": "requires valid runtime, model, and activation receipts",
+    "legacy_installation_result_is_readiness": false
   }
 }

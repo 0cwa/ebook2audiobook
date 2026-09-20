@@ -49,6 +49,7 @@ from lib.classes.argos_translator import ArgosTranslator
 from lib.classes.tts_manager import TTSManager
 from lib.classes.tts_engines.common.audio import get_audiolist_duration, get_audio_duration
 from lib.classes.tts_engines.common.utils import build_vtt_file
+from lib.conf_models import chatterbox_target_status
 
 from lib import *
 
@@ -3501,11 +3502,16 @@ def delete_unused_tmp_dirs(session_id:str, output_dir:str, days:int)->None:
                                 error = f'Error deleting {full_dir_path}: {e}'
                                 print(error)
 
-def get_compatible_tts_engines(language:str)->list[str]:
+def get_compatible_tts_engines(language:str, device:str|None=None)->list[str]:
+    selected_device = device or devices['CPU']['proc']
     return [
         engine
         for engine, cfg in default_engine_settings.items()
         if language in cfg.get('languages', {})
+        and (
+            engine != TTS_ENGINES['CHATTERBOX']
+            or chatterbox_target_status(selected_device)['supported']
+        )
     ]
 
 def translate_blocks(session_id:str, raw_blocks:list)->tuple:

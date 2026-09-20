@@ -11,11 +11,11 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
-from typing import Any, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, Sequence
 import wave
 
 from lib.classes.tts_engines.chatterbox_client import ChatterboxClient, ChatterboxClientError
@@ -24,7 +24,7 @@ from lib.classes.tts_engines.common.utils import TTSUtils
 from lib.classes.tts_registry import TTSRegistry
 from lib.conf import devices, run_dir, voices_dir
 from lib.conf_chatterbox_languages import chatterbox_language_id
-from lib.conf_models import TTS_ENGINES, SML_TAG_PATTERN
+from lib.conf_models import TTS_ENGINES, SML_TAG_PATTERN, chatterbox_target_status
 
 
 SAMPLE_RATE = 24000
@@ -35,7 +35,6 @@ MODEL_VARIANT = "v2"
 DEFAULT_BREAK_SECONDS = 0.4
 DEFAULT_PAUSE_SECONDS = 0.8
 MAX_SILENCE_SECONDS = 30.0
-_MODEL_REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 @dataclass(frozen=True)
@@ -48,6 +47,36 @@ class _RuntimeDetails:
     model_root: Path
     manifest_root: Path
     model_revision: str
+
+
+def chatterbox_host_status(session: Any, *, repo_root: Path | None = None) -> Mapping[str, Any]:
+    """Return the runtime-owned, host-facing readiness record.
+
+    The static target check remains here because the runtime contract
+    describes the approved host, while this adapter also needs to reject a
+    selected non-CPU device.  Artifact, capacity, receipt, and manifest
+    semantics belong to ``host_runtime_status``.  The runtime import stays
+    lazy so registry discovery does not load the optional runtime package.
+    """
+
+    device = session.get("device", DEVICE) if hasattr(session, "get") else DEVICE
+    target = chatterbox_target_status(device)
+    if not target["supported"]:
+        return {
+            "ok": False,
+            "supported": False,
+            "status": "unsupported",
+            "artifact_status": "unsupported",
+            "capacity_status": "not_checked",
+            "error": target["error"],
+            "target": target,
+        }
+
+    from components.Chatterbox.runtime.runtime import host_runtime_status
+
+    return host_runtime_status(
+        repo_root=repo_root or Path(__file__).resolve().parents[3],
+    )
 
 
 class _SessionCancellation:
@@ -84,45 +113,34 @@ def _unique_paths(values: Sequence[Any]) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def _manifest_model_revision(manifest_path: Path) -> str:
-    """Read the immutable model revision from the approved runtime manifest."""
-
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise ValueError(f"Chatterbox runtime manifest is not a regular file: {manifest_path}")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Chatterbox runtime manifest could not be read: {manifest_path}") from exc
-    sources = manifest.get("sources") if isinstance(manifest, dict) else None
-    model = sources.get("model") if isinstance(sources, dict) else None
-    revision = model.get("revision") if isinstance(model, dict) else None
-    if not isinstance(revision, str) or not _MODEL_REVISION_PATTERN.fullmatch(revision):
-        raise ValueError("Chatterbox runtime manifest must contain an immutable model revision")
-    return revision.lower()
+def _status_path(status: Mapping[str, Any], field: str) -> Path:
+    value = status.get(field)
+    if not isinstance(value, (str, os.PathLike)):
+        raise ValueError(f"Chatterbox runtime status is missing {field}")
+    return Path(value).expanduser().resolve(strict=False)
 
 
 def _runtime_details() -> _RuntimeDetails:
-    """Resolve all worker inputs through the Chatterbox runtime contract."""
+    """Resolve worker inputs from the stable host status contract."""
 
-    from components.Chatterbox.runtime.runtime import build_paths, sanitized_worker_environment
+    status = chatterbox_host_status({"device": DEVICE})
+    if not status.get("ok"):
+        raise ValueError(status.get("error") or "Chatterbox is not ready")
 
-    paths = build_paths(repo_root=Path(__file__).resolve().parents[3])
-    explicit = os.environ.get("E2A_CHATTERBOX_PYTHON")
-    if explicit:
-        raw_interpreter = Path(explicit).expanduser()
-        if not raw_interpreter.is_absolute():
-            raise ValueError("E2A_CHATTERBOX_PYTHON must be an absolute path")
-        interpreter = raw_interpreter.resolve(strict=False)
-    else:
-        interpreter = paths.environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    environment = status.get("environment")
+    if not isinstance(environment, Mapping):
+        raise ValueError("Chatterbox runtime status is missing environment")
+    model_revision = status.get("model_revision")
+    if not isinstance(model_revision, str) or not model_revision:
+        raise ValueError("Chatterbox runtime status is missing model_revision")
 
     return _RuntimeDetails(
-        interpreter=interpreter,
-        environment=sanitized_worker_environment(paths),
-        manifest_path=paths.manifest_path,
-        model_root=paths.model_namespace,
-        manifest_root=paths.runtime_dir,
-        model_revision=_manifest_model_revision(paths.manifest_path),
+        interpreter=_status_path(status, "interpreter"),
+        environment={str(key): str(value) for key, value in environment.items()},
+        manifest_path=_status_path(status, "manifest_path"),
+        model_root=_status_path(status, "verified_model_root"),
+        manifest_root=_status_path(status, "manifest_root"),
+        model_revision=model_revision,
     )
 
 
@@ -191,6 +209,9 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
     def __init__(self, session: Any):
         self.session = session
         self.tts_engine = TTS_ENGINES["CHATTERBOX"]
+        readiness = chatterbox_host_status(session)
+        if not readiness.get("ok"):
+            raise ValueError(readiness.get("error") or "Chatterbox is not ready")
         self.models = load_engine_presets(self.tts_engine)
         self.tts_key = self.session.get("model_cache") or "chatterbox-internal"
         self.tts_zs_key = None
@@ -364,12 +385,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             self._client.close()
             self._client = None
         runtime = self._runtime_contract()
-        worker_override = os.environ.get("E2A_CHATTERBOX_WORKER")
-        worker_path = (
-            Path(worker_override).expanduser()
-            if worker_override
-            else Path(__file__).resolve().parents[3] / "components" / "Chatterbox" / "worker.py"
-        )
+        worker_path = Path(__file__).resolve().parents[3] / "components" / "Chatterbox" / "worker.py"
         self._client_output_roots = roots
         self._client = ChatterboxClient(
             interpreter=runtime.interpreter,

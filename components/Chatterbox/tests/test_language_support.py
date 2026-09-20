@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib.machinery
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from components.Chatterbox.tests._adapter_loader import load_chatterbox_adapter
 from lib.conf_chatterbox_languages import CHATTERBOX_LANGUAGES, chatterbox_language_id
 from lib.conf_lang import language_mapping
 from lib.conf_models import TTS_ENGINES, default_engine_settings
@@ -27,22 +29,7 @@ worker_module = importlib.util.module_from_spec(WORKER_SPEC)
 WORKER_SPEC.loader.exec_module(worker_module)
 
 
-def _load_adapter_module():
-    """Reuse the discovery-time adapter module to avoid duplicate registration."""
-
-    existing = sys.modules.get("test_adapter")
-    if existing is not None and hasattr(existing, "chatterbox_module"):
-        return existing.chatterbox_module
-    adapter_path = ROOT / "components" / "Chatterbox" / "tests" / "test_adapter.py"
-    spec = importlib.util.spec_from_file_location("test_adapter", adapter_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["test_adapter"] = module
-    spec.loader.exec_module(module)
-    return module.chatterbox_module
-
-
-chatterbox_module = _load_adapter_module()
+chatterbox_module = load_chatterbox_adapter()
 
 
 EXPECTED_LANGUAGES = {
@@ -95,6 +82,47 @@ SML_UNICODE_TEXT = {
 
 
 class ChatterboxLanguageSupportTests(unittest.TestCase):
+    def setUp(self):
+        readiness = patch.object(
+            chatterbox_module,
+            "chatterbox_host_status",
+            return_value={"ok": True, "supported": True, "status": "ready", "error": None},
+        )
+        readiness.start()
+        self.addCleanup(readiness.stop)
+
+    def test_combined_discovery_restores_repository_module_state(self):
+        """The optional-engine adapter import must not poison later imports."""
+
+        package_name = "lib.classes.tts_engines"
+        utils_name = f"{package_name}.common.utils"
+        adapter_name = f"{package_name}.chatterbox"
+        previous_utils = sys.modules.get(utils_name)
+        previous_adapter = sys.modules.get(adapter_name)
+
+        repository_spec = importlib.machinery.PathFinder.find_spec(
+            utils_name,
+            [str(ROOT / "lib" / "classes" / "tts_engines" / "common")],
+        )
+        self.assertIsNotNone(repository_spec)
+        self.assertEqual(
+            Path(repository_spec.origin).resolve(),
+            ROOT / "lib" / "classes" / "tts_engines" / "common" / "utils.py",
+        )
+        self.assertIs(sys.modules.get(utils_name), previous_utils)
+
+        fresh_spec = importlib.util.spec_from_file_location(
+            "chatterbox_fresh_repository_import",
+            CLIENT_PATH,
+        )
+        self.assertIsNotNone(fresh_spec)
+        self.assertIsNotNone(fresh_spec.loader)
+        fresh_module = importlib.util.module_from_spec(fresh_spec)
+        fresh_spec.loader.exec_module(fresh_module)
+        self.assertEqual(Path(fresh_module.__file__).resolve(), CLIENT_PATH)
+        self.assertIs(sys.modules.get(utils_name), previous_utils)
+        self.assertIs(sys.modules.get(adapter_name), previous_adapter)
+
     def test_mapping_is_exact_and_uses_repository_language_keys(self):
         self.assertEqual(CHATTERBOX_LANGUAGES, EXPECTED_LANGUAGES)
         self.assertEqual(len(CHATTERBOX_LANGUAGES), 23)
@@ -112,7 +140,7 @@ class ChatterboxLanguageSupportTests(unittest.TestCase):
         self.assertIsNone(chatterbox_language_id("xx"))
         self.assertIsNone(chatterbox_language_id(None))
 
-    def test_compatibility_discovery_configuration_exposes_every_language(self):
+    def test_configuration_declares_every_language(self):
         chatterbox = TTS_ENGINES["CHATTERBOX"]
         configured = default_engine_settings[chatterbox]["languages"]
         self.assertIs(configured, CHATTERBOX_LANGUAGES)

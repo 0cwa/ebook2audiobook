@@ -53,6 +53,26 @@ def format_tts_engine_rating(tts_engine: str, engine_settings: dict) -> str:
     '''
 
 
+def _change_device_tts_controls(
+    session: dict,
+    selected: str,
+    *,
+    update_engine_list,
+    refresh_engine_controls,
+    empty_update,
+) -> tuple:
+    """Apply a device change and return the engine plus all dependent updates."""
+
+    if not session or not session.get('id', False):
+        return tuple(empty_update() for _ in range(8))
+    session['device'] = selected
+    engine_update = update_engine_list()
+    dependent_updates = tuple(refresh_engine_controls())
+    if len(dependent_updates) != 7:
+        raise ValueError('TTS engine control refresh must return seven dependent updates')
+    return (engine_update, *dependent_updates)
+
+
 def build_interface(args:dict)->gr.Blocks:
     from lib.classes.tts_engines.common.preset_loader import load_engine_presets
     try:
@@ -1949,6 +1969,17 @@ def build_interface(args:dict)->gr.Blocks:
                 visible_gr_translate = True if session.get('translate_enabled') else False
                 return gr.update(visible=visible_gr_translate, choices=translate_options, value=translate)
 
+            def _set_session_tts_engine(session:dict, engine:str|None)->bool:
+                previous_engine = session.get('tts_engine')
+                if previous_engine == engine:
+                    return False
+                previous_settings = default_engine_settings.get(previous_engine, {})
+                if session.get('voice') == previous_settings.get('voice'):
+                    session['voice'] = None
+                session['tts_engine'] = engine
+                session['fine_tuned'] = default_fine_tuned
+                return True
+
             def _update_gr_tts_engine_list(session_id:str)->dict:
                 try:
                     nonlocal tts_engine_options
@@ -1957,9 +1988,12 @@ def build_interface(args:dict)->gr.Blocks:
                         language = session['language']
                         if session.get('translate_enabled') and session.get('translate'):
                             language = session['translate']
-                        tts_engine_options = get_compatible_tts_engines(language)
-                        if session['tts_engine'] not in tts_engine_options:
-                            session['tts_engine'] = tts_engine_options[0]
+                        tts_engine_options = get_compatible_tts_engines(language, session.get('device'))
+                        if session.get('tts_engine') not in tts_engine_options:
+                            _set_session_tts_engine(
+                                session,
+                                tts_engine_options[0] if tts_engine_options else None,
+                            )
                         return gr.update(choices=tts_engine_options, value=session['tts_engine'])
                 except Exception as e:
                     error = f'_update_gr_tts_engine_list(): {e}!'
@@ -2011,12 +2045,59 @@ def build_interface(args:dict)->gr.Blocks:
                     exception_alert(session_id, error)              
                 return gr.update()
 
-            def _change_gr_device(session_id:str, selected:str)->None:
+            def _refresh_gr_tts_engine_controls(session_id:str)->tuple:
+                try:
+                    nonlocal models
+                    session = context.get_session(session_id)
+                    if session and session.get('id', False):
+                        engine = session.get('tts_engine')
+                        if not engine or engine not in default_engine_settings:
+                            session['custom_model'] = None
+                            session['fine_tuned'] = default_fine_tuned
+                            return (
+                                gr.update(value=''),
+                                gr.update(visible=False),
+                                gr.update(visible=False),
+                                gr.update(visible=False),
+                                gr.update(choices=[], value=None),
+                                gr.update(label='*Upload Custom Model not available'),
+                                gr.update(choices=[('None', None)], value=None),
+                            )
+                        models = load_engine_presets(engine)
+                        visible_xtts = visible_gr_tab_xtts_params if engine == TTS_ENGINES['XTTS'] else False
+                        visible_bark = visible_gr_tab_bark_params if engine == TTS_ENGINES['BARK'] else False
+                        supports_custom = engine in tts_engines_with_custom_model
+                        visible_custom_model = supports_custom and session['fine_tuned'] == 'internal'
+                        if supports_custom:
+                            file_label = f"Upload a {engine.upper()} ZIP file (Required: {', '.join(models[default_fine_tuned]['files'])})"
+                            custom_model_list_update = _update_gr_custom_model_list(session_id)
+                        else:
+                            session['custom_model'] = None
+                            file_label = f"*Upload Custom Model not available for {engine}"
+                            custom_model_list_update = gr.update(choices=[('None', None)], value=None)
+                        return (
+                            gr.update(value=_show_rating(engine)),
+                            gr.update(visible=visible_xtts),
+                            gr.update(visible=visible_bark),
+                            gr.update(visible=visible_custom_model),
+                            _update_gr_fine_tuned_list(session_id),
+                            gr.update(label=file_label),
+                            custom_model_list_update,
+                        )
+                except Exception as e:
+                    error = f'_refresh_gr_tts_engine_controls(): {e}'
+                    exception_alert(session_id, error)
+                return tuple(gr.update() for _ in range(7))
+
+            def _change_gr_device(session_id:str, selected:str)->tuple:
                 session = context.get_session(session_id)
-                if session and session.get('id', False):
-                    if session.get('device') != selected:
-                        session['device'] = selected
-                return
+                return _change_device_tts_controls(
+                    session,
+                    selected,
+                    update_engine_list=lambda: _update_gr_tts_engine_list(session_id),
+                    refresh_engine_controls=lambda: _refresh_gr_tts_engine_controls(session_id),
+                    empty_update=gr.update,
+                )
 
             def _change_gr_language(session_id:str, selected:str)->tuple:
                 session = context.get_session(session_id)
@@ -2798,7 +2879,7 @@ def build_interface(args:dict)->gr.Blocks:
                     if session.get('translate_enabled') and session.get('translate'):
                         effective_lang = session['translate']
                     if effective_lang:
-                        compatible = get_compatible_tts_engines(effective_lang)
+                        compatible = get_compatible_tts_engines(effective_lang, session.get('device'))
                         if compatible and session.get('tts_engine') not in compatible:
                             session['tts_engine'] = compatible[0]
                             session['fine_tuned'] = default_fine_tuned
@@ -3081,7 +3162,16 @@ def build_interface(args:dict)->gr.Blocks:
             gr_device.change(
                 fn=_change_gr_device,
                 inputs=[gr_session, gr_device],
-                outputs=None
+                outputs=[
+                    gr_tts_engine_list,
+                    gr_tts_rating,
+                    gr_tab_xtts_params,
+                    gr_tab_bark_params,
+                    gr_group_custom_model,
+                    gr_fine_tuned_list,
+                    gr_custom_model_file,
+                    gr_custom_model_list,
+                ]
             )
             gr_language.change(
                 fn=_change_gr_language,

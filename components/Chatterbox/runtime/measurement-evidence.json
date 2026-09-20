@@ -1,0 +1,170 @@
+{
+  "schema": "ebook2audiobook.chatterbox-measurement-evidence.v1",
+  "evidence_id": "eligible-local-tmp-20260920",
+  "observed_at": "2026-09-20",
+  "target": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "python": "3.11",
+    "backend": "cpu",
+    "network_isolation": "msb-no-net"
+  },
+  "eligible_run": {
+    "run_id": "eligible-local-tmp-20260920",
+    "mode": "disposable_execution",
+    "scenario": "model-baseline",
+    "phase": "model",
+    "measurement_evidence_eligible": true,
+    "production_manifest_mutated": false,
+    "production_readiness_mutated": false,
+    "worker_languages": 23,
+    "observations": 267,
+    "owned_logical_peak_bytes": 8890048764,
+    "owned_allocated_peak_bytes": 9027813376,
+    "filesystem_free_space_drop_bytes": 5323747328,
+    "raw_reports": [
+      {
+        "path": "tmp/runs/eligible-local-tmp-20260920/measurement.stdout.json",
+        "sha256": "0471f1a2325678a210f9dd8639882b67abe6dd59dd55bf2eff11d48efcd98bdd"
+      },
+      {
+        "path": "tmp/runs/eligible-local-tmp-20260920/measurement-eligibility-summary.json",
+        "sha256": "3563d6520440aa32de77bbeaf8ff45d01457aa67d3fd68fd31b4806d20291580"
+      },
+      {
+        "path": "tmp/runs/eligible-local-tmp-20260920/raw-observations.json",
+        "sha256": "5522e383b218d4cea31433ce323edc90d096722d1410a61cedd8273c3f6f8a40"
+      },
+      {
+        "path": "tmp/runs/eligible-local-tmp-20260920/raw-snapshots-detail.json",
+        "sha256": "5522e383b218d4cea31433ce323edc90d096722d1410a61cedd8273c3f6f8a40"
+      }
+    ]
+  },
+  "inputs": {
+    "lock": {
+      "path": "components/Chatterbox/runtime/requirements-cpu.lock",
+      "sha256": "b615b428258c69771b52da7310d954040aa5340efbb5b7f988e598347c56206d",
+      "requirement_count": 107
+    },
+    "model": {
+      "repository": "ResembleAI/chatterbox",
+      "variant": "multilingual-v2",
+      "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+      "total_logical_bytes": 3208951748,
+      "files": [
+        {
+          "path": "ve.pt",
+          "size_bytes": 5698626,
+          "sha256": "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1"
+        },
+        {
+          "path": "t3_mtl23ls_v2.safetensors",
+          "size_bytes": 2143989752,
+          "sha256": "b1237586127ce98e7800a68e49938eb5092846862aabcb6e17b2fda7889a6c75"
+        },
+        {
+          "path": "s3gen.pt",
+          "size_bytes": 1057165844,
+          "sha256": "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3"
+        },
+        {
+          "path": "grapheme_mtl_merged_expanded_v1.json",
+          "size_bytes": 69989,
+          "sha256": "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf"
+        },
+        {
+          "path": "conds.pt",
+          "size_bytes": 107374,
+          "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e"
+        },
+        {
+          "path": "Cangjie5_TC.json",
+          "size_bytes": 1920163,
+          "sha256": "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c"
+        }
+      ]
+    },
+    "tokenizer_data": {
+      "name": "spacy_ontonotes.zip",
+      "guest_path": "/measure/surface/cache/worker-data/spacy_ontonotes.zip",
+      "logical_bytes": 34567143,
+      "sha256": "b216e7f92de7ae285aeab8feba2faa8ea8216e5995ff6fb3d391cc8356db1bfe"
+    }
+  },
+  "storage_budgets": {
+    "rounding_formula": "ceil(measured_allocated_bytes / 1048576) * 1048576",
+    "buckets": [
+      {
+        "phase": "runtime_artifact_acquisition",
+        "name": "package_download_and_cache_peak",
+        "measured_allocated_bytes": 502280192,
+        "required_bytes": 503316480,
+        "status": "measured_clean_disposable"
+      },
+      {
+        "phase": "runtime_environment_construction",
+        "name": "expanded_environment_high_water",
+        "measured_allocated_bytes": 2012663808,
+        "required_bytes": 2013265920,
+        "status": "measured_clean_disposable"
+      },
+      {
+        "phase": "runtime_environment_construction",
+        "name": "environment_construction_transient_peak",
+        "measured_allocated_bytes": 4096,
+        "required_bytes": 1048576,
+        "status": "measured_clean_disposable"
+      },
+      {
+        "phase": "activation_and_self_test",
+        "name": "receipt_and_state_peak",
+        "measured_allocated_bytes": 36864,
+        "required_bytes": 1048576,
+        "status": "measured_clean_disposable"
+      },
+      {
+        "phase": "activation_and_self_test",
+        "name": "runtime_temporary_peak",
+        "measured_allocated_bytes": 94810112,
+        "required_bytes": 95420416,
+        "status": "measured_clean_disposable"
+      },
+      {
+        "phase": "model_acquisition",
+        "name": "model_download_staging_peak",
+        "measured_allocated_bytes": 0,
+        "required_bytes": 0,
+        "status": "not_applicable",
+        "basis": "The acquisition primitive writes directly to the exclusive candidate snapshot and creates no separate staging namespace."
+      },
+      {
+        "phase": "model_acquisition",
+        "name": "huggingface_xet_metadata_peak",
+        "measured_allocated_bytes": 0,
+        "required_bytes": 0,
+        "status": "not_applicable",
+        "basis": "The product path uses urllib.request and local snapshot loading; it does not invoke a Hugging Face Xet acquisition path."
+      }
+    ]
+  },
+  "synthesis": {
+    "run_id": "synthesis-20260920",
+    "result": {
+      "path": "tmp/runs/synthesis-20260920/synthesis-result.json",
+      "sha256": "6a21d0cebffe2a4b0b5f73c745d76b1bdb8bbfadf8dc53c916b4d4731710083c"
+    },
+    "audio_verification": {
+      "path": "tmp/runs/synthesis-20260920/audio-verification.json",
+      "sha256": "f92d164a88fb9d7e1ed5976e9bc8ae79db9142f8715baab7d62f7498d0f8c131",
+      "audio_sha256": "a25f071c90423e5ba7023a3ba3c47f3f1a45b7a84ae70a86085632e518a4d0a5",
+      "bytes": 74604,
+      "format": "FLAC",
+      "subtype": "PCM_16",
+      "channels": 1,
+      "sample_rate": 24000,
+      "frames": 59520,
+      "duration_seconds": 2.48
+    }
+  }
+}

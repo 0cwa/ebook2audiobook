@@ -22,27 +22,79 @@ import time
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
-PROTOCOL_VERSION = 1
-SAMPLE_RATE = 24000
-CHANNELS = 1
-DEVICE = "cpu"
-MODEL_FAMILY = "chatterbox-multilingual"
-MODEL_VARIANT = "v2"
-
-SUPPORTED_LANGUAGES = (
-    "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
-    "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
-    "sw", "tr", "zh",
+from components.Chatterbox.runtime.contract_data import (
+    ACTIVATION_RECEIPT_SCHEMA,
+    APPROVED_LANGUAGE_IDS,
+    CANONICAL_MODEL_FILE_PATHS,
+    CHANNELS,
+    DEVICE,
+    MAX_SEGMENTS,
+    MAX_SILENCE_SECONDS,
+    MAX_TEXT_CHARS,
+    MAX_TOTAL_TEXT_CHARS,
+    MODEL_FAMILY,
+    MODEL_RECEIPT_SCHEMA,
+    MODEL_VARIANT,
+    PKUSEG_DATA_FILENAME,
+    PKUSEG_DATA_SHA256,
+    PROTOCOL_VERSION,
+    RUNTIME_RECEIPT_SCHEMA,
+    SAMPLE_RATE,
+    SUPPORTED_LANGUAGES,
 )
-APPROVED_LANGUAGE_IDS = frozenset(SUPPORTED_LANGUAGES)
 
-MAX_SEGMENTS = 32
-MAX_TEXT_CHARS = 12000
-MAX_TOTAL_TEXT_CHARS = 40000
-MAX_SILENCE_SECONDS = 30.0
 _HEX40 = re.compile(r"^[0-9a-fA-F]{40}$")
 _HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def _require_local_pkuseg_data() -> None:
+    """Require the pinned tokenizer data before importing Chatterbox."""
+
+    raw_home = os.environ.get("PKUSEG_HOME")
+    if not raw_home:
+        raise RuntimeError("PKUSEG_HOME is required for the local Chatterbox worker")
+    home = Path(raw_home).expanduser()
+    if not home.is_absolute() or home.is_symlink() or not home.is_dir():
+        raise RuntimeError("PKUSEG_HOME must be an existing local directory")
+    try:
+        if home.resolve(strict=True) != home:
+            raise RuntimeError("PKUSEG_HOME must not contain a symlink")
+    except OSError as exc:
+        raise RuntimeError("PKUSEG_HOME is not readable") from exc
+
+    archive = home / PKUSEG_DATA_FILENAME
+    if archive.is_symlink() or not archive.is_file():
+        raise RuntimeError(
+            f"pinned tokenizer data is missing: {PKUSEG_DATA_FILENAME}"
+        )
+    if _sha256_file(archive).lower() != PKUSEG_DATA_SHA256:
+        raise RuntimeError("pinned tokenizer data checksum does not match")
+    model_dir = home / "spacy_ontonotes"
+    if model_dir.is_symlink() or not model_dir.is_dir():
+        raise RuntimeError("pinned tokenizer data is not extracted")
+    for name in ("features.msgpack", "weights.npz"):
+        entry = model_dir / name
+        if entry.is_symlink() or not entry.is_file():
+            raise RuntimeError(f"pinned tokenizer data is incomplete: {name}")
+
+
+def _enforce_local_only_environment() -> None:
+    """Prevent model/network fallback inside an activated synthesis worker."""
+
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN"):
+        os.environ.pop(key, None)
+    os.environ.update({
+        "HF_HUB_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "DIFFUSERS_OFFLINE": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "DO_NOT_TRACK": "1",
+    })
 
 
 class WorkerRequestError(ValueError):
@@ -56,6 +108,10 @@ class WorkerRequestError(ValueError):
 
 class WorkerCancelled(Exception):
     """Raised when the client asks the worker to cancel a request."""
+
+
+class ReceiptRepairRequiredError(RuntimeError):
+    """A receipt publication ambiguity that requires explicit repair."""
 
 
 def _runtime_language_ids(capabilities: Any) -> tuple[str, ...]:
@@ -211,8 +267,10 @@ def _repository_id(value: Any) -> str:
 
 
 def _manifest_file_records(value: Any) -> tuple[dict[str, Any], ...]:
-    if not isinstance(value, list) or not value:
-        raise RuntimeError("runtime manifest model.files must be a non-empty list")
+    # The allowlist remains enforced here, independently of runtime checks.
+    canonical_paths = set(CANONICAL_MODEL_FILE_PATHS)
+    if not isinstance(value, list) or len(value) != len(canonical_paths):
+        raise RuntimeError("runtime manifest model.files must contain exactly six canonical entries")
     records = []
     seen: set[str] = set()
     for item in value:
@@ -238,6 +296,8 @@ def _manifest_file_records(value: Any) -> tuple[dict[str, Any], ...]:
         if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
             raise RuntimeError(f"size_bytes for {path} must be a non-negative integer")
         records.append({"path": path, "sha256": digest, "size_bytes": size})
+    if seen != canonical_paths:
+        raise RuntimeError("runtime manifest model file paths must match the canonical V2 allowlist")
     return tuple(records)
 
 
@@ -277,25 +337,123 @@ def _verify_model_snapshot(
     records: Sequence[Mapping[str, Any]],
     approved_root: Path | None = None,
 ) -> Path:
-    snapshot = snapshot.resolve(strict=False)
+    raw_snapshot = snapshot.expanduser()
+    if raw_snapshot.is_symlink():
+        raise RuntimeError("verified model snapshot must not be a symlink")
+    snapshot = raw_snapshot.resolve(strict=False)
     cache_root = (approved_root or snapshot).resolve(strict=False)
-    if not snapshot.is_dir():
-        raise RuntimeError("downloaded model snapshot is not a directory")
+    if not snapshot.is_dir() or not _within(snapshot, (cache_root,)):
+        raise RuntimeError("verified model snapshot is not an approved directory")
+    expected = {str(record["path"]) for record in records}
+    discovered: set[str] = set()
+    stack = [snapshot]
+    while stack:
+        directory = stack.pop()
+        with os.scandir(directory) as iterator:
+            entries = list(iterator)
+        for entry in entries:
+            path = Path(entry.path)
+            relative = path.relative_to(snapshot).as_posix()
+            if entry.is_symlink():
+                raise RuntimeError(f"verified model snapshot contains a symlink: {relative}")
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(path)
+            elif entry.is_file(follow_symlinks=False):
+                discovered.add(relative)
+            else:
+                raise RuntimeError(f"verified model snapshot contains a special file: {relative}")
+    extras = sorted(discovered - expected)
+    if extras:
+        raise RuntimeError(f"verified model snapshot contains undeclared files: {', '.join(extras)}")
     for record in records:
         relative = PurePosixPath(str(record["path"]))
         raw_candidate = snapshot / Path(*relative.parts)
         candidate = raw_candidate.resolve(strict=False)
         if (
-            not _within(candidate, (cache_root,))
+            not _within(candidate, (snapshot,))
+            or raw_candidate.is_symlink()
             or not candidate.is_file()
         ):
-            raise RuntimeError(f"model snapshot is missing {record['path']}")
+            raise RuntimeError(f"verified model snapshot is missing {record['path']}")
         expected_size = record.get("size_bytes")
         if expected_size is not None and candidate.stat().st_size != expected_size:
-            raise RuntimeError(f"model snapshot size does not match {record['path']}")
+            raise RuntimeError(f"verified model snapshot size does not match {record['path']}")
         if _sha256_file(candidate) != record["sha256"]:
-            raise RuntimeError(f"model snapshot checksum does not match {record['path']}")
+            raise RuntimeError(f"verified model snapshot checksum does not match {record['path']}")
     return snapshot
+
+
+def _read_private_receipt(path_value: str | None, label: str, schema: str) -> tuple[Path, dict[str, Any]]:
+    if not path_value:
+        raise RuntimeError(f"{label} receipt path is required")
+    raw = Path(path_value).expanduser()
+    if not raw.is_absolute() or raw.is_symlink():
+        raise RuntimeError(f"{label} receipt must be an absolute regular file")
+    path = raw.resolve(strict=False)
+    publication = path.with_name(f"{path.name}.publishing")
+    published_proof = path.with_name(f"{path.name}.published")
+    ambiguity = path.with_name(f"{path.name}.ambiguous")
+    if os.path.lexists(os.fspath(publication)) or os.path.lexists(os.fspath(ambiguity)):
+        raise ReceiptRepairRequiredError(
+            f"{label} receipt publication is incomplete or its durability is ambiguous; "
+            "repair_required"
+        )
+    if not raw.is_file():
+        raise RuntimeError(f"{label} receipt must be an absolute regular file")
+    if os.path.lexists(os.fspath(published_proof)) and (
+        published_proof.is_symlink() or not published_proof.is_file()
+    ):
+        raise ReceiptRepairRequiredError(
+            f"{label} receipt publication proof is ambiguous; repair_required"
+        )
+    if not published_proof.is_file():
+        raise RuntimeError(f"{label} receipt has no durable publication proof")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        proof = json.loads(published_proof.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} receipt or publication proof could not be read") from exc
+    if not isinstance(payload, Mapping) or payload.get("schema") != schema or payload.get("status") != "ready":
+        raise RuntimeError(f"{label} receipt is not ready")
+    if (
+        not isinstance(proof, Mapping)
+        or proof.get("schema") != f"ebook2audiobook.chatterbox-{label}-receipt-publication.v1"
+        or proof.get("status") != "published"
+        or proof.get("receipt") != str(path)
+        or proof.get("receipt_sha256") != _sha256_file(path)
+    ):
+        raise RuntimeError(f"{label} receipt publication proof does not match")
+    return path, dict(payload)
+
+
+def _validate_activation_chain(model_root: Path) -> None:
+    """Require the runtime, model, and activation receipts for normal service."""
+
+    runtime_path, runtime = _read_private_receipt(
+        os.environ.get("E2A_CHATTERBOX_RUNTIME_RECEIPT"), "runtime", RUNTIME_RECEIPT_SCHEMA
+    )
+    model_path, model = _read_private_receipt(
+        os.environ.get("E2A_CHATTERBOX_MODEL_RECEIPT"), "model", MODEL_RECEIPT_SCHEMA
+    )
+    _, activation = _read_private_receipt(
+        os.environ.get("E2A_CHATTERBOX_ACTIVATION_RECEIPT"), "activation", ACTIVATION_RECEIPT_SCHEMA
+    )
+    snapshot_value = model.get("artifact", {}).get("snapshot_path") if isinstance(model.get("artifact"), Mapping) else None
+    if not isinstance(snapshot_value, str) or Path(snapshot_value).resolve(strict=False) != model_root.resolve(strict=False):
+        raise RuntimeError("model receipt does not bind the approved snapshot")
+    if activation.get("model_snapshot") != snapshot_value:
+        raise RuntimeError("activation receipt model snapshot does not match")
+    if activation.get("runtime_fingerprint") != runtime.get("runtime_fingerprint"):
+        raise RuntimeError("activation receipt runtime identity does not match")
+    if activation.get("model_fingerprint") != model.get("model_fingerprint"):
+        raise RuntimeError("activation receipt model identity does not match")
+    if activation.get("runtime_receipt_sha256") != _sha256_file(runtime_path):
+        raise RuntimeError("activation receipt runtime hash does not match")
+    if activation.get("model_receipt_sha256") != _sha256_file(model_path):
+        raise RuntimeError("activation receipt model hash does not match")
+    local_load = activation.get("checks", {}).get("local_model_load") if isinstance(activation.get("checks"), Mapping) else None
+    if not isinstance(local_load, Mapping) or local_load.get("ok") is not True:
+        raise RuntimeError("activation receipt local model load check did not pass")
 
 
 def _prompt(prompt: Any, roots: Sequence[Path]) -> dict[str, Any] | None:
@@ -464,6 +622,7 @@ class ChatterboxWorker:
         approved_model_root: str | os.PathLike[str] | None = None,
         approved_manifest_root: str | os.PathLike[str] | None = None,
         model_loader: Callable[[], Any] | None = None,
+        require_activation_receipt: bool = False,
     ):
         self.approved_roots = approved_roots
         self.model_revision = model_revision
@@ -471,6 +630,7 @@ class ChatterboxWorker:
         self.approved_model_root = approved_model_root
         self.approved_manifest_root = approved_manifest_root
         self.model_loader = model_loader
+        self.require_activation_receipt = require_activation_receipt
         self.model = None
         self.supported_languages = SUPPORTED_LANGUAGES
         self.sample_rate = SAMPLE_RATE
@@ -488,10 +648,11 @@ class ChatterboxWorker:
         if self.model_loader is not None:
             self.model = self.model_loader()
         else:
+            _enforce_local_only_environment()
             try:
                 if self.model_manifest_path is None or self.approved_model_root is None:
                     raise RuntimeError(
-                        "a runtime model manifest and approved model cache root are required"
+                        "a runtime model manifest and verified local model snapshot are required"
                     )
                 if self.approved_manifest_root is None:
                     raise RuntimeError("an approved model manifest root is required")
@@ -501,6 +662,8 @@ class ChatterboxWorker:
                 if raw_model_root.is_symlink():
                     raise RuntimeError("approved model root must not be a symlink")
                 model_root = raw_model_root.resolve(strict=False)
+                if self.require_activation_receipt:
+                    _validate_activation_chain(model_root)
                 raw_manifest_root = Path(os.fspath(self.approved_manifest_root)).expanduser()
                 if not raw_manifest_root.is_absolute():
                     raise RuntimeError("approved manifest root must be absolute")
@@ -513,28 +676,12 @@ class ChatterboxWorker:
                 )
                 self.model_revision = manifest["revision"]
                 try:
-                    with redirect_stdout(sys.stderr):
-                        from huggingface_hub import snapshot_download
+                    snapshot_path = _verify_model_snapshot(model_root, manifest["files"], model_root)
                 except Exception as exc:
-                    raise RuntimeError(
-                        "huggingface_hub is unavailable; install the pinned worker runtime"
-                    ) from exc
+                    raise RuntimeError(f"verified local Chatterbox model is unavailable: {exc}") from exc
                 try:
                     with redirect_stdout(sys.stderr):
-                        snapshot = snapshot_download(
-                            repo_id=manifest["repository"],
-                            revision=manifest["revision"],
-                            allow_patterns=manifest["allow_patterns"],
-                            cache_dir=str(model_root),
-                        )
-                    snapshot_path = Path(snapshot).expanduser().resolve(strict=False)
-                    if not _within(snapshot_path, (model_root,)):
-                        raise RuntimeError("downloaded model snapshot is outside the approved cache root")
-                    _verify_model_snapshot(snapshot_path, manifest["files"], model_root)
-                except Exception as exc:
-                    raise RuntimeError(f"pinned Chatterbox model acquisition failed: {exc}") from exc
-                try:
-                    with redirect_stdout(sys.stderr):
+                        _require_local_pkuseg_data()
                         from chatterbox.mtl_tts import ChatterboxMultilingualTTS
                 except Exception as exc:
                     raise RuntimeError(
@@ -554,12 +701,18 @@ class ChatterboxWorker:
                         )
                 except Exception as exc:
                     raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
+            except ReceiptRepairRequiredError:
+                raise
             except Exception as exc:
                 raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
             self.supported_languages = runtime_languages
         self.sample_rate = int(getattr(self.model, "sr", SAMPLE_RATE) or SAMPLE_RATE)
         if self.sample_rate != SAMPLE_RATE:
             raise RuntimeError("Chatterbox returned an unsupported sample rate")
+
+    def _send(self, message: Mapping[str, Any]) -> None:
+        with self._send_lock:
+            _message(message)
 
     def _load_audio_backend(self) -> tuple[Any, Any]:
         if self._audio_backend is None:
@@ -638,14 +791,14 @@ class ChatterboxWorker:
             if cancel.is_set():
                 Path(result["path"]).unlink(missing_ok=True)
                 raise WorkerCancelled()
-            _message({"protocol": PROTOCOL_VERSION, "id": request_id, "ok": True, "result": result})
+            self._send({"protocol": PROTOCOL_VERSION, "id": request_id, "ok": True, "result": result})
         except WorkerCancelled:
-            _message(_error_response(request_id, "cancelled", "synthesis cancelled", retryable=True))
+            self._send(_error_response(request_id, "cancelled", "synthesis cancelled", retryable=True))
         except WorkerRequestError as exc:
-            _message(_error_response(request_id, exc.code, exc.message, retryable=exc.code in {"timeout", "cancelled"}))
+            self._send(_error_response(request_id, exc.code, exc.message, retryable=exc.code in {"timeout", "cancelled"}))
         except Exception as exc:
             print(f"worker synthesis error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            _message(_error_response(request_id, "generation_failed", "Chatterbox synthesis failed", retryable=False))
+            self._send(_error_response(request_id, "generation_failed", "Chatterbox synthesis failed", retryable=False))
         finally:
             with self._active_lock:
                 self._active_id = None
@@ -655,11 +808,11 @@ class ChatterboxWorker:
     def _start_synthesis(self, request: Mapping[str, Any]) -> None:
         request_id = request.get("id")
         if not isinstance(request_id, str):
-            _message(_error_response(request_id, "invalid_request", "request id is required"))
+            self._send(_error_response(request_id, "invalid_request", "request id is required"))
             return
         with self._active_lock:
             if self._active_thread is not None and self._active_thread.is_alive():
-                _message(_error_response(request_id, "not_ready", "worker is busy", retryable=True))
+                self._send(_error_response(request_id, "not_ready", "worker is busy", retryable=True))
                 return
             cancel = threading.Event()
             self._active_id = request_id
@@ -681,7 +834,7 @@ class ChatterboxWorker:
                 accepted = True
             else:
                 accepted = False
-        _message({
+        self._send({
             "protocol": PROTOCOL_VERSION,
             "id": request.get("id"),
             "ok": True,
@@ -691,16 +844,27 @@ class ChatterboxWorker:
     def run(self) -> int:
         try:
             self.load_model()
+        except ReceiptRepairRequiredError as exc:
+            print(f"worker receipt repair error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            self._send({
+                "protocol": PROTOCOL_VERSION,
+                "event": "error",
+                "error": {
+                    "code": "repair_required",
+                    "message": "Chatterbox receipt publication requires repair",
+                },
+            })
+            return 1
         except Exception as exc:
             print(f"worker model load error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            _message({
+            self._send({
                 "protocol": PROTOCOL_VERSION,
                 "event": "error",
                 "error": {"code": "model_load_failed", "message": "Chatterbox runtime/model load failed"},
             })
             return 1
 
-        _message({
+        self._send({
             "protocol": PROTOCOL_VERSION,
             "event": "ready",
             "device": DEVICE,
@@ -720,7 +884,7 @@ class ChatterboxWorker:
                 elif operation == "cancel":
                     self._handle_cancel(request)
                 elif operation == "ping":
-                    _message({
+                    self._send({
                         "protocol": PROTOCOL_VERSION,
                         "id": request.get("id"),
                         "ok": True,
@@ -731,15 +895,15 @@ class ChatterboxWorker:
                         },
                     })
                 elif operation == "shutdown":
-                    _message({"protocol": PROTOCOL_VERSION, "id": request.get("id"), "ok": True, "result": {}})
+                    self._send({"protocol": PROTOCOL_VERSION, "id": request.get("id"), "ok": True, "result": {}})
                     self._stop.set()
                     break
                 else:
-                    _message(_error_response(request.get("id"), "invalid_request", "unknown operation"))
+                    self._send(_error_response(request.get("id"), "invalid_request", "unknown operation"))
             except json.JSONDecodeError:
-                _message(_error_response(None, "invalid_request", "message is not valid JSON"))
+                self._send(_error_response(None, "invalid_request", "message is not valid JSON"))
             except WorkerRequestError as exc:
-                _message(_error_response(None, exc.code, exc.message))
+                self._send(_error_response(None, exc.code, exc.message))
         active = self._active_thread
         if active is not None and active.is_alive():
             self._active_cancel.set() if self._active_cancel is not None else None
@@ -753,6 +917,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--self-test",
         action="store_true",
         help="validate the worker entrypoint without loading the model",
+    )
+    parser.add_argument(
+        "--model-self-test",
+        action="store_true",
+        help="load the verified local model without starting the JSONL service",
     )
     parser.add_argument("--device", default=DEVICE)
     # Kept for compatibility with the current host adapter.  When a runtime
@@ -779,6 +948,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             "error": {"code": "unsupported_device", "message": "Chatterbox worker supports CPU only"},
         })
         return 2
+    if args.model_self_test:
+        try:
+            instance = ChatterboxWorker(
+                model_revision=args.model_revision,
+                model_manifest_path=args.model_manifest,
+                approved_model_root=args.approved_model_root,
+                approved_manifest_root=args.approved_manifest_root,
+            )
+            instance.load_model()
+        except Exception as exc:
+            print(f"worker local model self-test error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            _message({
+                "protocol": PROTOCOL_VERSION,
+                "event": "error",
+                "error": {"code": "model_load_failed", "message": "verified local model load failed"},
+            })
+            return 1
+        _message({
+            "protocol": PROTOCOL_VERSION,
+            "event": "model_self_test",
+            "ok": True,
+            "languages": list(instance.supported_languages),
+            "sample_rate": instance.sample_rate,
+        })
+        return 0
     try:
         shared_roots = _as_roots(args.approved_root)
         voice_roots = _as_roots(args.approved_voice_root) or shared_roots
@@ -797,6 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_manifest_path=args.model_manifest,
         approved_model_root=args.approved_model_root,
         approved_manifest_root=args.approved_manifest_root,
+        require_activation_receipt=True,
     ).run()
 
 
