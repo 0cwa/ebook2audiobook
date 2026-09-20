@@ -73,6 +73,18 @@ def _change_device_tts_controls(
     return (engine_update, *dependent_updates)
 
 
+def _set_session_tts_engine(session:dict, engine:str|None, *, force:bool=False)->bool:
+    previous_engine = session.get('tts_engine')
+    if previous_engine == engine and not force:
+        return False
+    previous_settings = default_engine_settings.get(previous_engine, {})
+    if session.get('voice') == previous_settings.get('voice'):
+        session['voice'] = None
+    session['tts_engine'] = engine
+    session['fine_tuned'] = default_fine_tuned
+    return True
+
+
 def build_interface(args:dict)->gr.Blocks:
     from lib.classes.tts_engines.common.preset_loader import load_engine_presets
     try:
@@ -1970,17 +1982,6 @@ def build_interface(args:dict)->gr.Blocks:
                 visible_gr_translate = True if session.get('translate_enabled') else False
                 return gr.update(visible=visible_gr_translate, choices=translate_options, value=translate)
 
-            def _set_session_tts_engine(session:dict, engine:str|None)->bool:
-                previous_engine = session.get('tts_engine')
-                if previous_engine == engine:
-                    return False
-                previous_settings = default_engine_settings.get(previous_engine, {})
-                if session.get('voice') == previous_settings.get('voice'):
-                    session['voice'] = None
-                session['tts_engine'] = engine
-                session['fine_tuned'] = default_fine_tuned
-                return True
-
             def _update_gr_tts_engine_list(session_id:str)->dict:
                 try:
                     nonlocal tts_engine_options
@@ -2213,7 +2214,7 @@ def build_interface(args:dict)->gr.Blocks:
                 try:
                     session = context.get_session(session_id)
                     if session and session.get('id', False):
-                        if _set_session_tts_engine(session, engine) or session.get('translate_enabled'):
+                        if _set_session_tts_engine(session, engine, force=bool(session.get('translate_enabled'))):
                             return _refresh_gr_tts_engine_controls(session_id)
                 except Exception as e:
                     error = f'_change_gr_tts_engine_list(): {e}'
