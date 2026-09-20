@@ -35,6 +35,30 @@ export TTS_CACHE="$SCRIPT_DIR/models"
 export TESSDATA_PREFIX="$SCRIPT_DIR/models/tessdata"
 export TMPDIR="$SCRIPT_DIR/run"
 export APP_VERSION=$(<"$SCRIPT_DIR/VERSION.txt")
+
+# Immutable-Linux entry points must be usable before the native Python
+# environment exists. Dispatch them before argument validation, .installed
+# creation, group checks, or any installer path below.
+if [[ "${1:-}" == "--diagnose-json" ]]; then
+	shift
+	exec bash "$SCRIPT_DIR/tools/immutable-diagnostics.sh" --json "$@"
+fi
+if [[ "${1:-}" == "--diagnose" ]]; then
+	shift
+	exec bash "$SCRIPT_DIR/tools/immutable-diagnostics.sh" "$@"
+fi
+if [[ "${1:-}" == "--container" ]]; then
+	shift
+	container_action="run"
+	case "${1:-}" in
+		setup|run|update|diagnose|uninstall)
+			container_action="$1"
+			shift
+			;;
+	esac
+	exec bash "$SCRIPT_DIR/tools/immutable-launch.sh" "$container_action" "$@"
+fi
+
 export DEVICE_TAG="${DEVICE_TAG:-}"
 export CONDA_HOME="$HOME/Miniforge3"
 export CONDA_BIN_PATH="$CONDA_HOME/bin"
@@ -201,7 +225,9 @@ if [[ -n "${arguments[headless]+exists}" && ! -n "${arguments[script_mode]+exist
 	if [[ -n "${USER:-}" ]] && ! user_in_group "$APP_GROUP"; then
 		if [[ "$E2A_ALLOW_SYSTEM_INSTALL" != "1" ]]; then
 			echo "ERROR: headless mode requires membership in the checkout group."
-			echo "Set E2A_ALLOW_SYSTEM_INSTALL=1 to allow the required group change, then retry."
+			echo "No group or privilege change was attempted."
+			echo "For the no-sudo immutable path, use:"
+			echo "  $SCRIPT_DIR/tools/immutable-launch.sh setup --data-root /absolute/user/data"
 			exit 1
 		fi
 		echo "Adding $USER to group $APP_GROUP (requires sudo)..."
@@ -559,23 +585,21 @@ function install_user_calibre {
 }
 
 install_programs() {
-	if [[ "${OSTYPE-}" != darwin* ]]; then
-		if [[ " ${programs_missing[*]} " == *" calibre "* ]]; then
-			install_user_calibre || true
-		fi
-	fi
-	if [[ " ${programs_missing[*]} " == *" rust "* ]] || [[ " ${programs_missing[*]} " == *" rustc "* ]] || [[ " ${programs_missing[*]} " == *" cargo "* ]]; then
-		install_user_rust || true
-	fi
 	if check_required_programs "${HOST_PROGRAMS[@]}"; then
 		return 0
 	fi
 	if [[ "$E2A_ALLOW_SYSTEM_INSTALL" != "1" ]]; then
 		echo "Missing required programs: ${programs_missing[*]}"
 		echo "No system or Homebrew installation was run."
-		echo "To explicitly allow host package installation, rerun with:"
-		echo "  E2A_ALLOW_SYSTEM_INSTALL=1 $0"
+		echo "No-sudo next step: run the rootless CPU container path with an external data root."
+		echo "  $SCRIPT_DIR/tools/immutable-launch.sh setup --data-root /absolute/user/data"
 		return 1
+	fi
+	if [[ "${OSTYPE-}" != darwin* && " ${programs_missing[*]} " == *" calibre "* ]]; then
+		install_user_calibre || true
+	fi
+	if [[ " ${programs_missing[*]} " == *" rust "* ]] || [[ " ${programs_missing[*]} " == *" rustc "* ]] || [[ " ${programs_missing[*]} " == *" cargo "* ]]; then
+		install_user_rust || true
 	fi
 
 	if [[ "${OSTYPE-}" == darwin* ]]; then

@@ -13,11 +13,11 @@
 # so this file only works from the root of a full checkout, never from a
 # directory holding a lone downloaded Dockerfile.
 #
-#   docker compose                       --profile cpu    up
-#   DEVICE_TAG=cu130    docker compose   --profile cuda   up
-#   DEVICE_TAG=jetson51 docker compose   --profile jetson up
-#   DEVICE_TAG=rocm     docker compose   --profile rocm   up
-#   DEVICE_TAG=xpu      docker compose   --profile xpu    up
+#   E2A_DATA_ROOT=/absolute/user/data docker compose                       --profile cpu    up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=cu130    docker compose   --profile cuda   up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=jetson51 docker compose   --profile jetson up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=rocm     docker compose   --profile rocm   up
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=xpu      docker compose   --profile xpu    up
 #
 # Requires Compose V2 (the `docker compose` plugin), NOT the legacy
 # `docker-compose` v1 — only V2 honors deploy.resources.devices outside Swarm
@@ -32,7 +32,7 @@
 # binfmt) if you really want to cross-build.
 #
 # Confirm a profile expands (and that extends merged) before running it:
-#   DEVICE_TAG=rocm docker compose --profile rocm config
+#   E2A_DATA_ROOT=/absolute/user/data DEVICE_TAG=rocm docker compose --profile rocm config
 
 services:
   # --- shared base: exists only for extends, never runs (dummy _base profile)
@@ -61,14 +61,13 @@ services:
     entrypoint: ["bash", "ebook2audiobook.command", "--script_mode", "full_docker"]
     tty: true
     stdin_open: true
-    ports:
-      - "7860:7860"
     volumes:
-      - ./ebooks:/app/ebooks:rw
-      - ./audiobooks:/app/audiobooks:rw
-      - ./models:/app/models:rw
-      - ./voices:/app/voices:rw
-      - ./tmp:/app/tmp:rw
+      - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/ebooks:/app/ebooks:rw"
+      - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/audiobooks:/app/audiobooks:rw"
+      - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/models:/app/models:rw"
+      - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/voices:/app/voices:rw"
+      - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/run:/app/run:rw"
+      - "${E2A_DATA_ROOT:?Set E2A_DATA_ROOT to an absolute user-owned directory}/tmp:/app/tmp:rw"
     restart: unless-stopped
     profiles: [_base]
 
@@ -77,6 +76,10 @@ services:
     extends:
       service: ebook2audiobook-base
     profiles: [cpu]
+    # The immutable CPU guide serves the browser only on the local host.
+    # Accelerator profiles retain their existing host-wide binding.
+    ports:
+      - "127.0.0.1:7860:7860"
 
   # --- NVIDIA discrete (amd64 dGPU, or arm64 SBSA) --------------------------
   # Needs the nvidia-container-toolkit installed on the host.
@@ -84,6 +87,8 @@ services:
     extends:
       service: ebook2audiobook-base
     profiles: [cuda]
+    ports:
+      - "7860:7860"
     deploy:
       resources:
         reservations:
@@ -100,6 +105,8 @@ services:
     extends:
       service: ebook2audiobook-base
     profiles: [jetson]
+    ports:
+      - "7860:7860"
     runtime: nvidia
     environment:
       NVIDIA_VISIBLE_DEVICES: all
@@ -112,6 +119,8 @@ services:
     extends:
       service: ebook2audiobook-base
     profiles: [rocm]
+    ports:
+      - "7860:7860"
     devices:
       - /dev/kfd
       - /dev/dri
@@ -124,6 +133,8 @@ services:
     extends:
       service: ebook2audiobook-base
     profiles: [xpu]
+    ports:
+      - "7860:7860"
     devices:
       - /dev/dri
     group_add:
