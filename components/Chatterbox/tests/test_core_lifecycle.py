@@ -74,6 +74,31 @@ def _conversion_session(root: Path) -> dict:
 
 
 class CoreLifecycleTests(unittest.TestCase):
+    def test_natural_sort_key_uses_numeric_basename_runs(self):
+        paths = [
+            "/cache/hash-z/volume-10.epub",
+            "/cache/hash-a/volume-2.epub",
+            "/cache/hash-b/volume-1.epub",
+        ]
+
+        self.assertEqual(
+            sorted(paths, key=core.natural_sort_key),
+            [paths[2], paths[1], paths[0]],
+        )
+
+    def test_token_spacing_preserves_contractions_and_sml_boundaries(self):
+        self.assertEqual(core.foreign2latin("can't", "eng"), "can't")
+        self.assertEqual(
+            core.foreign2latin("hello [pause] world", "eng"),
+            "hello [pause] world",
+        )
+
+    def test_normalize_text_assigns_emoji_removal_result(self):
+        self.assertEqual(
+            core.normalize_text("Hello 😀 world", "eng", "en", "piper"),
+            "Hello world",
+        )
+
     def test_chatterbox_compatibility_is_target_and_device_aware(self):
         chatterbox = core.TTS_ENGINES["CHATTERBOX"]
         with (
