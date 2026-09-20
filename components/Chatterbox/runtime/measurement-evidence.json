@@ -9,6 +9,12 @@
     "backend": "cpu",
     "network_isolation": "msb-no-net"
   },
+  "runtime_manifest_identity": {
+    "path": "components/Chatterbox/runtime/runtime-manifest.json",
+    "sequence": "measure_then_publish",
+    "pre_publish_sha256": "2ccb7484229a654abacab755ae716783f48eb97734be95532de57c0e5d5e6e74",
+    "final_published_sha256": "2ffdcffc60b6fd353f8e4f73c0042458f54420bd85477d227fda3e3ce969c2e8"
+  },
   "eligible_run": {
     "run_id": "eligible-local-tmp-20260920",
     "mode": "disposable_execution",
