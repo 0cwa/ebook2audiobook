@@ -2211,33 +2211,10 @@ def build_interface(args:dict)->gr.Blocks:
 
             def _change_gr_tts_engine_list(session_id:str, engine:str)->tuple:
                 try:
-                    nonlocal models
                     session = context.get_session(session_id)
                     if session and session.get('id', False):
-                        if session.get('tts_engine') != engine or session.get('translate_enabled'):
-                            models = load_engine_presets(engine)
-                            session['voice'] = None if session['voice'] == default_engine_settings[session['tts_engine']]['voice'] else session['voice']
-                            session['tts_engine'] = engine
-                            session['fine_tuned'] = default_fine_tuned
-                            visible_xtts = visible_gr_tab_xtts_params if session['tts_engine'] == TTS_ENGINES['XTTS'] else False
-                            visible_bark = visible_gr_tab_bark_params if session['tts_engine'] == TTS_ENGINES['BARK'] else False
-                            supports_custom = session['tts_engine'] in tts_engines_with_custom_model
-                            visible_custom_model = supports_custom and session['fine_tuned'] == 'internal'
-                            if supports_custom:
-                                file_label = f"Upload a {session['tts_engine'].upper()} ZIP file (Required: {', '.join(models[default_fine_tuned]['files'])})"
-                                custom_model_list_update = _update_gr_custom_model_list(session_id)
-                            else:
-                                file_label = f"*Upload Custom Model not available for {session['tts_engine']}"
-                                custom_model_list_update = gr.update()
-                            return (
-                                gr.update(value=_show_rating(session['tts_engine'])),
-                                gr.update(visible=visible_xtts),
-                                gr.update(visible=visible_bark),
-                                gr.update(visible=visible_custom_model),
-                                _update_gr_fine_tuned_list(session_id),
-                                gr.update(label=file_label),
-                                custom_model_list_update
-                            )
+                        if _set_session_tts_engine(session, engine) or session.get('translate_enabled'):
+                            return _refresh_gr_tts_engine_controls(session_id)
                 except Exception as e:
                     error = f'_change_gr_tts_engine_list(): {e}'
                     exception_alert(session_id, error)
