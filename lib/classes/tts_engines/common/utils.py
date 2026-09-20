@@ -379,7 +379,7 @@ class TTSUtils:
                                 persistent = bname not in m._non_persistent_buffers_set
                                 m.register_buffer(bname, b.to(device), persistent=persistent)
                 # --- UNIVERSAL XPU WORKAROUND ---
-                # Automatically finds and patches any Coqui HiFi-GAN vocoder 
+                # Automatically finds and patches any Coqui HiFi-GAN vocoder
                 # (XTTS, VITS, YourTTS, etc.) to run on CPU and bypass oneDNN JIT bugs.
                 from lib.classes.tts_engines.common.xpu_workarounds import patch_coqui_hifigan_for_xpu
                 engine = patch_coqui_hifigan_for_xpu(engine)
@@ -494,7 +494,7 @@ class TTSUtils:
                                         persistent = bname not in m._non_persistent_buffers_set
                                         m.register_buffer(bname, b.to(device), persistent=persistent)
                     # --- UNIVERSAL XPU WORKAROUND ---
-                    # Automatically finds and patches any Coqui HiFi-GAN vocoder 
+                    # Automatically finds and patches any Coqui HiFi-GAN vocoder
                     # (XTTS, VITS, YourTTS, etc.) to run on CPU and bypass oneDNN JIT bugs.
                     from lib.classes.tts_engines.common.xpu_workarounds import patch_coqui_hifigan_for_xpu
                     engine = patch_coqui_hifigan_for_xpu(engine)

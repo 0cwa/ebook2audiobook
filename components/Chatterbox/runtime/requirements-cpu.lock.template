@@ -1,0 +1,14 @@
+# Intentionally unresolved lock template; never pass this file to pip.
+# e2a-lock-format: 1
+# e2a-lock-status: unresolved
+#
+# The exact transitive package set and hashes must be generated in a
+# disposable Python 3.11 environment from requirements-cpu.in.  Resolve the
+# Perth Git dependency to an immutable commit or wheel, and record the exact
+# Chatterbox source revision plus multilingual V2 model snapshot/file hashes
+# in runtime-manifest.json.  Do not replace these fields with guesses.
+#
+# The final requirements-cpu.lock must contain --require-hashes, exact ==
+# pins, SHA-256 hashes for every artifact, and only the approved indexes:
+# --index-url https://pypi.org/simple
+# --extra-index-url https://download.pytorch.org/whl/cpu

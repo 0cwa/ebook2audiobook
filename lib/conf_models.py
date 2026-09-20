@@ -1,5 +1,6 @@
-import os, re
+import os, platform, re
 from lib.conf import tts_dir, voices_dir
+from lib.conf_chatterbox_languages import CHATTERBOX_LANGUAGES
 
 loaded_tts = {}
 xtts_builtin_speakers_list = {}
@@ -13,7 +14,8 @@ TTS_ENGINES = {
     "FAIRSEQ": "fairseq",
     "GLOWTTS": "glowtts",
     "TACOTRON": "tacotron",
-    "YOURTTS": "yourtts"
+    "YOURTTS": "yourtts",
+    "CHATTERBOX": "chatterbox"
 }
 
 TTS_VOICE_CONVERSION = {
@@ -71,6 +73,34 @@ tts_engines_with_custom_model = (TTS_ENGINES['PIPER'], TTS_ENGINES['XTTS'], TTS_
 
 max_custom_model = 100
 max_custom_voices = 1000
+
+CHATTERBOX_SUPPORTED_SYSTEM = "linux"
+CHATTERBOX_SUPPORTED_ARCHITECTURES = frozenset({"x86_64", "amd64"})
+CHATTERBOX_SUPPORTED_DEVICE = "cpu"
+
+
+def chatterbox_target_status(device, *, system=None, architecture=None):
+    """Return the static first-slice target status without inspecting artifacts."""
+
+    actual_system = (system or platform.system()).lower()
+    actual_architecture = (architecture or platform.machine()).lower()
+    actual_device = str(device or "").lower()
+    supported = (
+        actual_system == CHATTERBOX_SUPPORTED_SYSTEM
+        and actual_architecture in CHATTERBOX_SUPPORTED_ARCHITECTURES
+        and actual_device == CHATTERBOX_SUPPORTED_DEVICE
+    )
+    return {
+        "supported": supported,
+        "status": "supported" if supported else "unsupported",
+        "system": actual_system,
+        "architecture": actual_architecture,
+        "device": actual_device,
+        "error": None if supported else (
+            "Chatterbox Multilingual V2 supports Linux x86_64/amd64 CPU only; "
+            f"selected target is {actual_system} {actual_architecture} {actual_device or 'unknown-device'}."
+        ),
+    }
 
 default_engine_settings = {
     TTS_ENGINES['XTTS']: {
@@ -285,5 +315,17 @@ default_engine_settings = {
         "voice": None,
         "voices": {"Machinella-5": "female-en-5", "ElectroMale-2": "male-en-2", 'Machinella-4': 'female-pt-4\n', 'ElectroMale-3': 'male-pt-3\n'},
         "rating": {"VRAM": 1, "CPU": 5, "RAM": 1, "Realism": 2}
+    },
+    TTS_ENGINES['CHATTERBOX']: {
+        "repo": "ResembleAI/chatterbox",
+        "model_family": "chatterbox-multilingual",
+        "model_variant": "v2",
+        "languages": CHATTERBOX_LANGUAGES,
+        "samplerate": 24000,
+        "files": [],
+        "voice": None,
+        "voices": {},
+        "notice": "Chatterbox Multilingual V2 — 23 languages — CPU-only — isolated Python 3.11 runtime — Linux x86_64/amd64. Audio includes an imperceptible Perth watermark; Chatterbox and Perth are MIT-licensed.",
+        "rating": {"VRAM": 0, "CPU": 4, "RAM": 8, "Realism": 5}
     }
 }
