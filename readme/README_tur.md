@@ -496,7 +496,7 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Çoklu işlemeyle dönüştürme
 - [x] Toplu e-kitap klasörü dönüştürme
 - [x] GPU Aygıt algılama
-- [x] Ses klonlama yüklemek için herhangi bir arka plan referans sesini gürültüden arındırın,
+- [x] Ses klonlama yüklemesi için herhangi bir arka plan referans sesini gürültüden arındırın
 - [x] Özel ince ayarlı model yükleme
 - [ ] [Bir iOS uygulaması yapmak](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Bir android uygulaması yapmak](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)

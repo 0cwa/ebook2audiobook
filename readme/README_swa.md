@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Ubadilishaji wa uchakataji-nyingi
 - [x] Ubadilishaji wa folda ya eBook ya kundi
 - [x] Utambuzi wa Kifaa cha GPU
-- [x] Kataa sauti yoyote ya kumbukumbu ya mandharinyuma kwa ajili ya kupakia sauti,
-- [x] Upakiaji wa modeli mahususi
+- [x] Zuia sauti yoyote ya kumbukumbu ya mandharinyuma kwa ajili ya upakiaji wa sauti
+- [x] Upakiaji wa modeli mahususi iliyotengenezwa vizuri
 - [ ] [Tengeneza programu ya IOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Tengeneza programu ya android](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] 멀티프로세싱 변환
 - [x] 일괄 전자책 폴더 변환
 - [x] GPU 장치 감지
-- [x] 음성 복제 업로드를 위한 모든 배경 참조 오디오 노이즈를 제거합니다.
-- [x] 사용자 지정 미세 조정 모델 업로드
+- [x] 음성 복제 업로드를 위한 모든 배경 참조 오디오 잡음 제거
+- [x] 맞춤형 미세 조정 모델 업로드
 - [ ] [iOS 앱 만들기](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [android 앱 만들기](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

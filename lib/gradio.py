@@ -1139,13 +1139,14 @@ def build_interface(args:dict)->gr.Blocks:
                 outputs = tuple([gr.update(interactive=False) for _ in range(10)])
                 return outputs + (gr.update(visible='hidden'), gr.update(visible='hidden'))
 
-            def _enable_on_voice_upload(session_id:str)->tuple:
-                session = context.get_session(session_id)
+            def _enable_on_voice_upload(session_id:str, ebook_src:str, ebook_textarea:str, ebook_mode:str)->tuple:
                 visible_buttons = 'hidden'
                 enabled_convert_btn = False
-                outputs = tuple([gr.update(interactive=True) for _ in range(9)])
+                session = context.get_session(session_id)
+                outputs = tuple([gr.update(interactive=False) for _ in range(9)])
                 if session and session.get('id', False):
-                    enabled_convert_btn = True if session['ebook'] is not None else enabled_convert_btn
+                    outputs = tuple([gr.update(interactive=True) for _ in range(9)])
+                    enabled_convert_btn = True if (ebook_src and ebook_mode != ebook_modes['TEXT']) or (ebook_textarea and ebook_mode == ebook_modes['TEXT']) else enabled_convert_btn
                     visible_buttons = True if session['voice'] is not None else visible_buttons
                 return outputs + (gr.update(interactive=enabled_convert_btn), gr.update(visible=visible_buttons), gr.update(visible=visible_buttons))
 
@@ -1434,7 +1435,7 @@ def build_interface(args:dict)->gr.Blocks:
                 outputs = tuple([gr.update() for _ in range(14)])
                 return outputs
 
-            def _change_gr_audiobook_list(session_id:str, selected:str|None)->dict:
+            def _change_gr_audiobook_list(session_id:str, selected:str|None)->tuple:
                 try:
                     session = context.get_session(session_id)
                     if session and session.get('id', False):
@@ -2447,10 +2448,11 @@ def build_interface(args:dict)->gr.Blocks:
                                         if isinstance(args['ebook_list'], list):
                                             default_voice = session.get('voice')
                                             voice_map = dict(session.get('voice_map') or {})
-                                            clean_list = sorted([
+                                            clean_list = [
                                                 f for f in args['ebook_list']
                                                 if any(f.endswith(ext) for ext in ebook_formats)
-                                            ])
+                                            ]
+                                            clean_list.sort(key=natural_sort_key)
                                             for skipped in [f for f in args['ebook_list'] if f not in clean_list]:
                                                 show_alert(session_id, {
                                                     "type": "warning",
@@ -3143,7 +3145,7 @@ def build_interface(args:dict)->gr.Blocks:
                 show_progress_on=[gr_voice_list]
             ).then(
                 fn=_enable_on_voice_upload,
-                inputs=[gr_session],
+                inputs=[gr_session, gr_ebook_src, gr_ebook_textarea, gr_ebook_mode],
                 outputs=outputs_on_voice_upload,
                 show_progress_on=[gr_voice_list]
             )
@@ -3695,6 +3697,10 @@ def build_interface(args:dict)->gr.Blocks:
                 fn=_change_gr_abs_library,
                 inputs=[gr_session, gr_abs_url, gr_abs_api_token, gr_abs_library],
                 outputs=None
+            ).then(
+                fn=_abs_upload_enabled,
+                inputs=[gr_session],
+                outputs=gr_abs_upload_btn
             )
             gr_abs_search_btn.click(
                 fn=_search_abs_libraries,

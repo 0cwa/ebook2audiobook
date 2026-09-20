@@ -20,3 +20,4 @@ models/*
 !audiobooks/gui/gradio/.gitkeep
 !audiobooks/gui/host/.gitkeep
 .installed
+.env

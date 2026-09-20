@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Multiprocessing conversion
 - [x] Batch ebook folder conversion
 - [x] GPU Device detection
-- [x] Denoise any background reference audio for upload voice cloning,
-- [x] Custom fine tuned model upload
+- [x] Denoise any background reference audio for voice cloning upload
+- [x] Custom fine-tuned model upload
 - [ ] [Make a IOS app](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Make an android app](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

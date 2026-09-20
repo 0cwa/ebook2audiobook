@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Átalakítás többszálú feldolgozással
 - [x] E-könyv mappa kötegelt átalakítása
 - [x] GPU-eszköz észlelése
-- [x] Hangklónozás feltöltéséhez bármilyen háttérreferencia-hang denoise,
-- [x] Egyedi finomhangolt modell feltöltés
+- [x] Bármilyen háttér-referenciahang denoise a hangklónozás feltöltéséhez
+- [x] Egyedi, finomhangolt modellfeltöltés
 - [ ] [iOS alkalmazás készítése](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Android alkalmazás készítése](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

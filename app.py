@@ -403,7 +403,7 @@ Default to config.json model.""")
                             default_voice = args.get('voice')
                             # Filter and sort upfront: ebook_list becomes the authoritative to-process set.
                             # sorted() gives reproducible ordering across Linux/macOS/Windows.
-                            all_entries = sorted(os.listdir(args['ebooks_dir']))
+                            all_entries = sorted(os.listdir(args['ebooks_dir']), key=c.natural_sort_key)
                             args['ebook_list'] = []
                             for name in all_entries:
                                 ebook_dir_path = os.path.abspath(os.path.join(args['ebooks_dir'], name))

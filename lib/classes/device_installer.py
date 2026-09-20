@@ -1,4 +1,4 @@
-import os, re, sys, platform, shutil, subprocess, importlib, json
+import os, re, sys, platform, shutil, subprocess, importlib, json, tempfile
 
 from functools import cached_property
 from typing import Union
@@ -17,9 +17,29 @@ class DeviceInstaller():
     # mutually exclusive distributions: only one of each list may end up installed.
     # select_pkg() decides which, finalize_exclusive_packages() removes the others
     # AFTER the requirements pass (a transitive requirement can reintroduce a loser).
+    # torchaudio's final release. Its I/O moved into torchcodec and PyPI stops at
+    # 2.11.0 while torch has gone on to 2.13.0, so any torch_matrix row above 2.11
+    # would ask pip for a 'torchaudio==<torch version>' that was never published
+    # and abort the whole device install with 'No matching distribution found'.
+    # 2.11.0 is also the first torchaudio with no 'torch==' pin of its own
+    # (2.10.0 still declared torch==2.10.0), which is what makes capping safe:
+    # the dependency-resolving pass cannot drag torch back down to match it.
+    # Bump this single value if torchaudio ever resumes releases.
+    torchaudio_max = '2.11.0'
+
     exclusive_pkgs = {
         'onnxruntime': ['onnxruntime', 'onnxruntime-gpu', 'onnxruntime-directml'],
     }
+
+    # scoped wheel cache shared by the requirements pass and
+    # finalize_exclusive_packages(), wiped by drop_pip_cache() before
+    # install_python_packages() returns. With --no-cache-dir on both, the keeper
+    # of an exclusive group is downloaded twice — onnxruntime-gpu alone is a
+    # 250 MB wheel. This keeps it once. It lives under the system temp dir and is
+    # created and removed inside the same docker RUN, so it never reaches a layer.
+    # Trade-off: a transient disk spike the size of the wheels resolved in that
+    # one pass. Set E2A_PIP_CACHE_DIR to move it off a small /tmp.
+    pip_cache_dir = os.environ.get('E2A_PIP_CACHE_DIR') or os.path.join(tempfile.gettempdir(), 'e2a_pip_cache')
 
     def __init__(self):
         self.system = sys.platform
@@ -407,7 +427,7 @@ class DeviceInstaller():
             if self.system == systems['MACOS']:
                 return False
             if os.name == 'posix':
-                if not os.path.exists('/dev/dri/renderD128'):
+                if not glob('/dev/dri/renderD*'):
                     return False
                 if has_cmd('sycl-ls'):
                     out = try_cmd('sycl-ls').lower()
@@ -425,6 +445,16 @@ class DeviceInstaller():
                 return False
             return False
 
+        def _normalize_version(v:str)->tuple:
+            '''Parse version string into (major, minor, patch). Patch defaults to 0.'''
+            m = re.search(r'(\d+)\.(\d+)(?:\.(\d+))?', v or '')
+            if not m:
+                return ()
+            major = int(m.group(1))
+            minor = int(m.group(2))
+            patch = int(m.group(3)) if m.group(3) else 0
+            return (major, minor, patch)
+
         name = None
         tag = None
         msg = ''
@@ -438,6 +468,8 @@ class DeviceInstaller():
                 name = devices['CUDA']['proc'] if tag_letters == 'cu' else devices['ROCM']['proc'] if tag_letters == devices['ROCM']['proc'] else devices['JETSON']['proc'] if tag_letters == devices['JETSON']['proc'] else devices['XPU']['proc'] if tag_letters == devices['XPU']['proc'] else devices['MPS']['proc'] if tag_letters == devices['MPS']['proc'] else devices['CPU']['proc']
                 devices[name.upper()]['found'] = True
                 tag = forced_tag
+                if forced_tag in ['cu128', 'cu129', 'rocm7.2.1'] and self.system == systems['WINDOWS']:
+                    tag = f'win-{forced_tag}'
                 msg = f'Hardware forced from DEVICE_TAG={tag}'
             else:
                 msg = f'DEVICE_TAG not valid'
@@ -473,16 +505,6 @@ class DeviceInstaller():
             # ============================================================
             elif has_rocm() and has_amd_gpu_pci():
 
-                def _normalize_version(v:str)->tuple:
-                    '''Parse version string into (major, minor, patch). Patch defaults to 0.'''
-                    m = re.search(r'(\d+)\.(\d+)(?:\.(\d+))?', v or '')
-                    if not m:
-                        return ()
-                    major = int(m.group(1))
-                    minor = int(m.group(2))
-                    patch = int(m.group(3)) if m.group(3) else 0
-                    return (major, minor, patch)
-
                 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:False'
                 os.environ['PYTORCH_HIP_ALLOC_CONF'] = 'expandable_segments:False'
                 version = ()
@@ -493,7 +515,6 @@ class DeviceInstaller():
                 try:
                     import ctypes
                     libhip = None
-
                     if os.name == 'nt':
                         hip_path = os.environ.get('HIP_PATH', '')
                         candidates = ['amdhip64.dll']
@@ -651,7 +672,7 @@ class DeviceInstaller():
                         for t, entry in torch_matrix.items():
                             if self.system not in entry['os'] or not t.startswith('rocm'):
                                 continue
-                            ver_str = t[len('rocm-rel-'):] if t.startswith('rocm-rel-') else t[len('rocm'):]
+                            ver_str = t[len('win-rocm'):] if t.startswith('win-rocm') else t[len('rocm'):]
                             tag_ver = _normalize_version(ver_str)
                             if not tag_ver:
                                 continue
@@ -662,7 +683,7 @@ class DeviceInstaller():
                             if le_versions:
                                 matched = max(le_versions)
                                 if self.system == systems['WINDOWS']:
-                                    tag = f'rocm-rel-{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'rocm-rel-{matched[0]}.{matched[1]}'
+                                    tag = f'win-rocm{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'win-rocm{matched[0]}.{matched[1]}'
                                 else:
                                     tag = f'rocm{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'rocm{matched[0]}.{matched[1]}'
                         if cmp == 1:
@@ -689,7 +710,7 @@ class DeviceInstaller():
                                 for t, entry in torch_matrix.items():
                                     if self.system not in entry['os'] or not t.startswith('rocm'):
                                         continue
-                                    ver_str = t[len('rocm-rel-'):] if t.startswith('rocm-rel-') else t[len('rocm'):]
+                                    ver_str = t[len('win-rocm'):] if t.startswith('win-rocm') else t[len('rocm'):]
                                     tag_ver = _normalize_version(ver_str)
                                     if not tag_ver:
                                         continue
@@ -700,7 +721,7 @@ class DeviceInstaller():
                                     if le_versions:
                                         matched = max(le_versions)
                                         if self.system == systems['WINDOWS']:
-                                            tag = f'rocm-rel-{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'rocm-rel-{matched[0]}.{matched[1]}'
+                                            tag = f'win-rocm{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'win-rocm{matched[0]}.{matched[1]}'
                                         else:
                                             tag = f'rocm{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'rocm{matched[0]}.{matched[1]}'
                             msg = ''
@@ -762,7 +783,6 @@ class DeviceInstaller():
                                 break
                             except OSError:
                                 continue
-
                     if libcudart:
                         v_int = ctypes.c_int()
                         if libcudart.cudaRuntimeGetVersion(ctypes.byref(v_int)) == 0:
@@ -805,7 +825,7 @@ class DeviceInstaller():
 
                 # 3) Version comparison + tag assignment
                 # Tolerant: CUDA > max is accepted (driver is backward-compatible),
-                # but torch build tag clamps at max (cu128) so we install a real wheel.
+                # but torch build tag clamps at cuda_version_range['max'] so we install a real wheel.
                 if version:
                     cmp, current, min_tuple, max_tuple = version_classify(version, cuda_version_range)
                     min_ver = f'{min_tuple[0]}.{min_tuple[1]}'
@@ -817,6 +837,24 @@ class DeviceInstaller():
                     else:
                         devices['CUDA']['found'] = True
                         name = devices['CUDA']['proc']
+                        compat_versions = []
+                        for t, entry in torch_matrix.items():
+                            if self.system not in entry['os'] or not t.startswith('cu'):
+                                continue
+                            ver_str = t[len('win-cu'):] if t.startswith('win-cu') else t[len('cu'):]
+                            tag_ver = _normalize_version(ver_str)
+                            if not tag_ver:
+                                continue
+                            compat_versions.append(tag_ver)
+                        tag = None
+                        if compat_versions:
+                            le_versions = [v for v in compat_versions if v <= version]
+                            if le_versions:
+                                matched = max(le_versions)
+                                if self.system == systems['WINDOWS']:
+                                    tag = f'win-cu{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'win-cu{matched[0]}.{matched[1]}'
+                                else:
+                                    tag = f'cu{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'cu{matched[0]}.{matched[1]}'
                         if cmp == 1:
                             tag = f'cu{max_tuple[0]}{max_tuple[1]}'
                             msg = f'CUDA {version} but tested max {max_ver} so using torch for cu{max_tuple[0]}{max_tuple[1]}'
@@ -841,7 +879,29 @@ class DeviceInstaller():
                                 else:
                                     tag = f'cu{max_tuple[0]}{max_tuple[1]}'
                             name = devices['CUDA']['proc']
-                            msg = ''
+                            compat_versions = []
+                            for t, entry in torch_matrix.items():
+                                if self.system not in entry['os'] or not t.startswith('cu'):
+                                    continue
+                                ver_str = t[len('win-cu'):] if t.startswith('win-cu') else t[len('cu'):]
+                                tag_ver = _normalize_version(ver_str)
+                                if not tag_ver:
+                                    continue
+                                compat_versions.append(tag_ver)
+                            tag = None
+                            if compat_versions:
+                                le_versions = [v for v in compat_versions if v <= version]
+                                if le_versions:
+                                    matched = max(le_versions)
+                                    if self.system == systems['WINDOWS']:
+                                        tag = f'win-cu{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'win-cu{matched[0]}.{matched[1]}'
+                                    else:
+                                        tag = f'cu{matched[0]}.{matched[1]}.{matched[2]}' if matched[2] else f'cu{matched[0]}.{matched[1]}'
+                            if cmp == 1:
+                                tag = f'cu{max_tuple[0]}{max_tuple[1]}'
+                                msg = f'CUDA {version} but tested max {max_ver} so using torch for cu{max_tuple[0]}{max_tuple[1]}'
+                            else:
+                                tag = f'cu{current[0]}{current[1]}'  # still index 0/1, ignore patch
                     except Exception:
                         pass
 
@@ -871,10 +931,16 @@ class DeviceInstaller():
             # ============================================================
             # INTEL XPU
             # ============================================================
-            elif has_xpu() and has_intel_gpu_pci():
+            # gated on the PCI scan ALONE. has_xpu() needs sycl-ls or clinfo on PATH,
+            # which are oneAPI *toolkit* binaries — torch xpu wheels ship their own
+            # SYCL runtime and need none of it, so gating on them dropped real XPU
+            # hosts to cpu with an empty note. The decision now happens inside the
+            # branch, where a missing user-mode driver produces a message that says so.
+            elif has_intel_gpu_pci():
                 version = ''
                 msg = ''
                 xpu_device_count = 0
+                ze_status = 'no-loader'
 
                 # 1) Level Zero / SYCL runtime detection via ctypes (primary)
                 try:
@@ -886,17 +952,18 @@ class DeviceInstaller():
                         oneapi_root = os.environ.get('ONEAPI_ROOT', '')
                         if oneapi_root:
                             candidates.insert(0, os.path.join(oneapi_root, 'bin', 'ze_loader.dll'))
-                        for lib_name in candidates:
-                            try:
-                                libze = ctypes.CDLL(lib_name)
-                                break
-                            except OSError:
-                                continue
                     else:
-                        candidates = ['libze_loader.so', 'libze_loader.so.1']
+                        # versioned runtime soname FIRST. 'libze_loader.so' without the
+                        # version is the devel symlink; on a rolling distro it can point
+                        # at a different build than the runtime object, and loading that
+                        # one makes zeInit fail version negotiation (0x78000002
+                        # ZE_RESULT_ERROR_UNSUPPORTED_VERSION) on a machine whose GPU
+                        # stack is otherwise fine.
+                        candidates = ['libze_loader.so.1', 'libze_loader.so']
                         ze_lib_dirs = [
                             '/usr/lib/x86_64-linux-gnu',
                             '/usr/lib64',
+                            '/usr/lib',
                             '/opt/intel/oneapi/lib',
                         ]
                         for d in ze_lib_dirs:
@@ -907,44 +974,97 @@ class DeviceInstaller():
                                             candidates.append(os.path.join(d, f))
                                 except OSError:
                                     pass
-                        for lib_name in candidates:
-                            try:
-                                libze = ctypes.CDLL(lib_name)
-                                break
-                            except OSError:
-                                continue
 
-                    if libze:
-                        if libze.zeInit(ctypes.c_uint(0)) == 0:
-                            driver_count = ctypes.c_uint(0)
-                            if libze.zeDriverGet(ctypes.byref(driver_count), None) == 0 and driver_count.value > 0:
-                                xpu_device_count = driver_count.value
-                except (OSError, AttributeError):
+                    # a loader that dlopens is not a loader that works. Only zeInit
+                    # returning success ends the search — otherwise fall through to the
+                    # next candidate and keep the last failure for the note.
+                    for lib_name in candidates:
+                        try:
+                            libze = ctypes.CDLL(lib_name)
+                        except OSError:
+                            continue
+                        try:
+                            # argtypes are mandatory here: without them ctypes marshals a
+                            # handle taken out of the array as a C int and truncates the
+                            # top 32 bits of the pointer.
+                            libze.zeDriverGet.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_void_p)]
+                            libze.zeDeviceGet.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_void_p)]
+                            libze.zeDeviceGetProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                            rc = libze.zeInit(ctypes.c_uint(0))
+                        except (AttributeError, ValueError):
+                            ze_status = 'not-a-loader'
+                            continue
+                        if rc != 0:
+                            ze_status = f'init-failed 0x{rc & 0xffffffff:x}'
+                            continue
+                        ze_status = 'no-driver'
+                        driver_count = ctypes.c_uint(0)
+                        if libze.zeDriverGet(ctypes.byref(driver_count), None) == 0 and driver_count.value > 0:
+                            drivers = (ctypes.c_void_p * driver_count.value)()
+                            if libze.zeDriverGet(ctypes.byref(driver_count), drivers) == 0:
+                                ze_status = 'no-device'
+                                # ze_device_properties_t starts with {stype, pNext, type}.
+                                # stype is 4 bytes padded up to pointer alignment, so
+                                # 'type' sits two pointer widths in on any ABI we ship on.
+                                ptr_size = ctypes.sizeof(ctypes.c_void_p)
+                                for drv in drivers:
+                                    if not drv:
+                                        continue
+                                    device_count = ctypes.c_uint(0)
+                                    if libze.zeDeviceGet(ctypes.c_void_p(drv), ctypes.byref(device_count), None) != 0:
+                                        continue
+                                    if device_count.value == 0:
+                                        continue
+                                    ze_devices = (ctypes.c_void_p * device_count.value)()
+                                    if libze.zeDeviceGet(ctypes.c_void_p(drv), ctypes.byref(device_count), ze_devices) != 0:
+                                        continue
+                                    for dev in ze_devices:
+                                        if not dev:
+                                            continue
+                                        # the device type filter is a REFINEMENT, not a gate:
+                                        # a device the loader enumerated is a device. If the
+                                        # properties query fails for any reason the device is
+                                        # still counted — worst case an NPU inflates the count
+                                        # on a box that already passed the Intel GPU PCI scan.
+                                        # Skipping on failure turned every properties error
+                                        # into a phantom 'no driver installed'.
+                                        props = (ctypes.c_ubyte * 1024)()
+                                        # ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES == 0x3.
+                                        # 0x1 is ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES and the
+                                        # Intel driver rejects the call outright when it is
+                                        # passed here.
+                                        ctypes.c_uint.from_buffer(props, 0).value = 0x3
+                                        if libze.zeDeviceGetProperties(ctypes.c_void_p(dev), ctypes.byref(props)) != 0:
+                                            xpu_device_count += 1
+                                            ze_status = 'ok-unverified'
+                                            continue
+                                        # ZE_DEVICE_TYPE_GPU == 1, ZE_DEVICE_TYPE_VPU == 5.
+                                        if ctypes.c_uint.from_buffer(props, ptr_size * 2).value == 1:
+                                            xpu_device_count += 1
+                                            ze_status = 'ok'
+                        break
+                except (OSError, AttributeError, ValueError):
                     pass
 
-                # 2) sycl-ls detection
-                if not version:
+                # 2) sycl-ls detection — only reached when the loader itself could not be
+                # dlopen'd. torch xpu runs on Level Zero, so an OpenCL-only line is not a
+                # usable device: both the underscore ('level_zero:gpu', 2024+) and the
+                # hyphen ('Intel(R) Level-Zero', older) spellings count, nothing else does.
+                if xpu_device_count == 0:
+                    sycl_out = ''
                     if os.name == 'posix' and has_cmd('sycl-ls'):
-                        out = try_cmd('sycl-ls')
-                        if out:
-                            gpu_lines = [l for l in out.splitlines() if 'gpu' in l.lower()]
-                            if gpu_lines and xpu_device_count == 0:
-                                xpu_device_count = len(gpu_lines)
+                        sycl_out = try_cmd('sycl-ls')
                     elif os.name == 'nt':
                         oneapi_root = os.environ.get('ONEAPI_ROOT', '')
                         sycl_ls = os.path.join(oneapi_root, 'bin', 'sycl-ls') if oneapi_root else ''
                         if sycl_ls and os.path.isfile(sycl_ls):
-                            out = try_cmd(f'"{sycl_ls}"')
-                            if out:
-                                gpu_lines = [l for l in out.splitlines() if 'gpu' in l.lower()]
-                                if gpu_lines and xpu_device_count == 0:
-                                    xpu_device_count = len(gpu_lines)
-                        if xpu_device_count == 0 and has_cmd('sycl-ls'):
-                            out = try_cmd('sycl-ls')
-                            if out:
-                                gpu_lines = [l for l in out.splitlines() if 'gpu' in l.lower()]
-                                if gpu_lines:
-                                    xpu_device_count = len(gpu_lines)
+                            sycl_out = try_cmd(f'"{sycl_ls}"')
+                        if not sycl_out and has_cmd('sycl-ls'):
+                            sycl_out = try_cmd('sycl-ls')
+                    if sycl_out:
+                        gpu_lines = [l for l in sycl_out.splitlines() if 'gpu' in l.lower() and ('level_zero' in l.lower() or 'level-zero' in l.lower())]
+                        if gpu_lines:
+                            xpu_device_count = len(gpu_lines)
 
                 # 3) oneAPI version file
                 if not version:
@@ -971,25 +1091,60 @@ class DeviceInstaller():
                                         version = lib_version_parse(f.read()) or ''
                                     break
 
-                # Version comparison + tag assignment (unranged by default: accepts anything)
-                if version:
-                    cmp, current, min_tuple, max_tuple = version_classify(version, xpu_version_range)
-                    min_ver = '.'.join(str(p) for p in min_tuple)
-                    max_ver = '.'.join(str(p) for p in max_tuple)
-                    if cmp == -1:
-                        msg = f'XPU oneAPI {version} < min {min_ver}. Please upgrade.'
-                    elif cmp is None:
-                        msg = 'Intel GPU detected but oneAPI version unparseable.'
+                # Tag assignment. The device count decides — it is the same condition
+                # torch.xpu.is_available() answers at runtime. The oneAPI version file
+                # only annotates the note: a stale or absent toolkit must never veto a
+                # working GPU, which is what the old version-first ordering did.
+                if xpu_device_count > 0:
+                    devices['XPU']['found'] = True
+                    name = devices['XPU']['proc']
+                    tag = devices['XPU']['proc']
+                    plural = 's' if xpu_device_count > 1 else ''
+                    if version:
+                        cmp, current, min_tuple, max_tuple = version_classify(version, xpu_version_range)
+                        min_ver = '.'.join(str(p) for p in min_tuple)
+                        max_ver = '.'.join(str(p) for p in max_tuple)
+                        if cmp == -1:
+                            msg = f'{xpu_device_count} Intel GPU{plural} via Level Zero. oneAPI {version} < min {min_ver} but using torch default xpu build anyway.'
+                        elif cmp == 1:
+                            msg = f'{xpu_device_count} Intel GPU{plural} via Level Zero. oneAPI {version} but tested max {max_ver} so using torch default xpu build.'
+                        elif cmp is None:
+                            msg = f'{xpu_device_count} Intel GPU{plural} via Level Zero. oneAPI version unparseable so using torch default xpu build.'
+                        else:
+                            msg = f'{xpu_device_count} Intel GPU{plural} via Level Zero, oneAPI {version}.'
                     else:
-                        devices['XPU']['found'] = True
-                        name = devices['XPU']['proc']
-                        tag = devices['XPU']['proc']
-                        if cmp == 1:
-                            msg = f'XPU oneAPI {version} but tested max {max_ver} so using torch default xpu build'
-                elif xpu_device_count > 0:
-                    msg = 'Intel GPU detected but oneAPI toolkit version file not found.'
+                        msg = f'{xpu_device_count} Intel GPU{plural} via Level Zero. oneAPI toolkit version file not found so using torch default xpu build.'
                 else:
-                    msg = 'Intel GPU detected but oneAPI Base Toolkit not installed.'
+                    # Hardware is on the bus but nothing usable answered. Name the missing
+                    # layer instead of tagging xpu: wheels would install and then die in
+                    # engine.to(device) with 'No XPU devices are available'.
+                    kmd = ''
+                    for node in glob('/dev/dri/renderD*'):
+                        sysfs = os.path.join('/sys/class/drm', os.path.basename(node), 'device')
+                        try:
+                            with open(os.path.join(sysfs, 'vendor')) as f:
+                                if f.read().strip() != '0x8086':
+                                    continue
+                        except OSError:
+                            continue
+                        kmd = os.path.basename(os.path.realpath(os.path.join(sysfs, 'driver')))
+                        break
+                    if os.name == 'nt':
+                        msg = f'Intel GPU on PCI but no Level Zero GPU device ({ze_status}). Update the Intel graphics driver, then re-run. Falling back to CPU.'
+                    elif not glob('/dev/dri/renderD*'):
+                        msg = 'Intel GPU on PCI but no render node. Check that i915 or xe is loaded and that this user is in the render group. Falling back to CPU.'
+                    elif not kmd:
+                        msg = 'Intel GPU on PCI but its render node is not bound to a driver. Falling back to CPU.'
+                    elif ze_status == 'no-loader':
+                        msg = f'Intel GPU bound to {kmd} but no Level Zero loader (libze_loader.so.1). Install level-zero and intel-level-zero-gpu, then re-run. Falling back to CPU.'
+                    elif ze_status.startswith('init-failed'):
+                        msg = f'Intel GPU bound to {kmd}, Level Zero loader present but zeInit {ze_status[len("init-failed "):]}. Check /dev/dri permissions (render group) and that intel-level-zero-gpu is installed. Falling back to CPU.'
+                    elif ze_status == 'no-driver':
+                        msg = f'Intel GPU bound to {kmd}, Level Zero initialised but exposes no driver. intel-level-zero-gpu is missing or does not support {kmd}. Falling back to CPU.'
+                    elif has_xpu():
+                        msg = f'Intel GPU bound to {kmd} and visible to SYCL/OpenCL but Level Zero reports no device. Install or update intel-level-zero-gpu, then re-run. Falling back to CPU.'
+                    else:
+                        msg = f'Intel GPU bound to {kmd} but Level Zero reports no device ({ze_status}). Install intel-level-zero-gpu and intel-opencl-icd, then re-run. Falling back to CPU.'
 
                 # 4) PyTorch last-resort fallback
                 if not devices['XPU']['found']:
@@ -1018,6 +1173,21 @@ class DeviceInstaller():
             if tag is None:
                 name = devices['CPU']['proc']
                 tag = devices['CPU']['proc']
+                # an empty note here is a silent fallback and unreadable in a log: it
+                # cannot be told apart from a deliberate cpu box. Record what was seen
+                # on the bus so the next log line says which gate was missed.
+                if not msg:
+                    seen = []
+                    if has_nvidia_gpu_pci():
+                        seen.append('NVIDIA')
+                    if has_amd_gpu_pci():
+                        seen.append('AMD')
+                    if has_intel_gpu_pci():
+                        seen.append('Intel')
+                    if seen:
+                        msg = f"No GPU backend matched. {' + '.join(seen)} GPU on PCI but its runtime did not answer. Falling back to CPU."
+                    else:
+                        msg = 'No GPU found on the PCI bus. Falling back to CPU.'
 
         name, tag, msg = (v.strip() if isinstance(v, str) else v for v in (name, tag, msg))
         return (name, tag, msg)
@@ -1045,6 +1215,15 @@ class DeviceInstaller():
             return (0,) * max_parts
         nums = [int(n) for n in m.group(0).split('.')[:max_parts]]
         return tuple(nums + [0] * (max_parts - len(nums)))
+
+    def torchaudio_version(self, torch_version:str)->str:
+        # Single source of truth for "which torchaudio goes with this torch".
+        # Below the ceiling torchaudio tracks torch exactly; above it, torchaudio
+        # simply stopped existing, so clamp rather than request a phantom version.
+        # See the torchaudio_max comment on the class for why clamping is safe.
+        if self.version_tuple(torch_version, 3) > self.version_tuple(self.torchaudio_max, 3):
+            return self.torchaudio_max
+        return torch_version
 
     def eval_marker(self, marker_part:str)->tuple|bool:
         env = {
@@ -1241,11 +1420,17 @@ class DeviceInstaller():
                 print(msg)
                 subprocess.call([sys.executable, '-m', 'pip', 'cache', 'purge'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
-                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', '--ignore-installed', '--no-deps', '--root-user-action=ignore', 'pip'])
+                    # no --ignore-installed here. It skips the uninstall, so the new
+                    # pip is unpacked over the old one and BOTH dist-info dirs stay in
+                    # site-packages. pip then reports whichever sorts first: the build
+                    # log showed 'Downloading pip-26.2.1' followed by 'Successfully
+                    # installed pip-25.0.1', and every later notice still offered the
+                    # same upgrade. Let pip uninstall itself properly.
+                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', '--no-deps', '--root-user-action=ignore', 'pip'])
                 except subprocess.CalledProcessError as e:
                     msg = f'pip self-upgrade skipped (continuing with current pip): {e}'
                     print(msg)
-                base_cmd = [sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--root-user-action=ignore']
+                base_cmd = [sys.executable, '-m', 'pip', 'install', '--cache-dir', self.pip_cache_dir, '--root-user-action=ignore']
                 # empty on every platform except macOS Intel, where apply_pins() is
                 # a no-op, so nothing else changes behaviour.
                 pins = [spec for spec in overrides.values() if spec]
@@ -1277,10 +1462,12 @@ class DeviceInstaller():
                 msg = '\nAll required packages are installed.'
                 print(msg)
             self.finalize_exclusive_packages()
+            self.drop_pip_cache()
             return self.check_voices()
         except Exception as e:
             error = f'install_python_packages() error: {e}'
             print(error)
+            self.drop_pip_cache()
             return 1
 
     def remove_obsolete_packages(self)->int:
@@ -1417,13 +1604,19 @@ class DeviceInstaller():
                 # stay on the CPU build (NVIDIA's jetson wheels are cp310/numpy<2).
                 # cp311 is the oldest wheel in the current release, so below 3.11
                 # pip would backtrack to an ancient onnxruntime-gpu that pins numpy<2.
-                if self.python_version >= (3, 11) and self.arch in [archs['X86_64'], archs['AMD64']] and (devices['CUDA']['found'] or devices['XPU']['found'] or devices['ROCM']['found']):
+                # CUDA ONLY: onnxruntime-gpu is the CUDA/TensorRT build. On an xpu or
+                # rocm host it installs ~250 MB, finds no CUDA provider and falls back
+                # to CPU without a word — the exact silent degradation the cuda_major
+                # check below exists to prevent. Intel wants onnxruntime-openvino and
+                # AMD onnxruntime-rocm; neither is wired in here, so both fall through
+                # to the plain CPU build (and to directml on Windows).
+                if self.python_version >= (3, 11) and self.arch in [archs['X86_64'], archs['AMD64']] and devices['CUDA']['found']:
                     # torch and onnxruntime must share the same CUDA major, or the
                     # CUDA provider fails to load, ORT falls back to CPU silently and
                     # piper just runs slower with no error. The onnxruntime-gpu wheel
                     # series: <=1.18.1 is CUDA 11, 1.19-1.26 is CUDA 12, 1.27+ is
-                    # CUDA 13. No cuda major found (rocm/xpu reaching here) means
-                    # there is nothing to match, so leave it uncapped.
+                    # CUDA 13. No cuda major found means there is nothing to match,
+                    # so leave it uncapped.
                     cuda_major = self.torch_cuda_major()
                     if cuda_major == 11:
                         # the last CUDA 11 wheel is onnxruntime-gpu 1.18.1, built
@@ -1491,6 +1684,17 @@ class DeviceInstaller():
             error = f'clean_pkg_dir(): {e}'
             print(error)
 
+    def drop_pip_cache(self)->None:
+        # the scoped cache exists only to bridge the requirements pass and
+        # finalize_exclusive_packages(). Once both have run it is dead weight,
+        # and inside a docker RUN it must be gone before the layer is committed.
+        try:
+            if os.path.isdir(self.pip_cache_dir):
+                shutil.rmtree(self.pip_cache_dir, ignore_errors=True)
+        except Exception as e:
+            error = f'drop_pip_cache(): {e}'
+            print(error)
+
     def finalize_exclusive_packages(self)->int:
         # runs AFTER the requirements pass. transitive requirements reintroduce
         # packages that were removed before it: piper-tts declares
@@ -1512,11 +1716,13 @@ class DeviceInstaller():
                 # 'cannot import name InferenceSession ... (unknown location)'.
                 msg = f"Resolving {pkg}: keeping {keep}, removing {', '.join(losers) if losers else 'a broken install'}…"
                 print(msg)
+                # --cache-dir, not --no-cache-dir: the requirements pass already
+                # fetched this exact wheel into pip_cache_dir, so the reinstall is
+                # served from disk instead of pulling 250 MB off PyPI a second time.
                 if installed:
                     subprocess.call([sys.executable, '-m', 'pip', 'uninstall', '-y', '--root-user-action=ignore', *installed])
                 self.clean_pkg_dir(pkg)
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--root-user-action=ignore', keep])
-            return 0
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--cache-dir', self.pip_cache_dir, '--root-user-action=ignore', keep])
             return 0
         except Exception as e:
             error = f'finalize_exclusive_packages() error: {e}'
@@ -1531,16 +1737,19 @@ class DeviceInstaller():
             if tag == devices['CPU']['proc']:
                 return installed_tag is None or installed_tag == devices['CPU']['proc']
             # MPS: installed from '/whl/cpu' on macOS arm64 -> bare wheels
-            if device_info['name'] == devices['MPS']['proc']:
+            elif device_info['name'] == devices['MPS']['proc']:
                 return installed_tag is None
-            # ROCm Windows (TheRock): matrix key is 'rocm-rel-X.Y.Z' (kept distinct from
-            # the linux 'rocmX.Y' keys) but the wheel's local version drops '-rel-',
-            # e.g. tag='rocm-rel-7.2.1' -> '+rocm7.2.1' (optionally with a build suffix).
-            if device_info['name'] == devices['ROCM']['proc'] and self.system == systems['WINDOWS']:
-                wheel_tag = tag.replace('-rel-', '')
+            # ROCm Windows (TheRock): matrix key is 'win-rocmX.Y.Z' (kept distinct from
+            # the linux 'rocmX.Y' keys) but the wheel's local version drops 'win-',
+            # e.g. tag='win-rocm7.2.1' -> '+rocm7.2.1' (optionally with a build suffix).
+            elif device_info['name'] == devices['ROCM']['proc'] and self.system == systems['WINDOWS']:
+                wheel_tag = tag.replace('win-', '')
                 return installed_tag == wheel_tag or (installed_tag is not None and installed_tag.startswith(f'{wheel_tag}-'))
             # CUDA, XPU, ROCm Linux, Jetson: must be exactly '+<tag>'
             # (a pure hex local version means a custom/dev build -> reinstall)
+            elif device_info['name'] == devices['CUDA']['proc'] and self.system == systems['WINDOWS']:
+                wheel_tag = tag.replace('win-', '')
+                return installed_tag == wheel_tag or (installed_tag is not None and installed_tag.startswith(f'{wheel_tag}-'))
             return installed_tag == tag
 
         def _needs_reinstall():
@@ -1551,12 +1760,15 @@ class DeviceInstaller():
                 return True
             if not _tag_ok(current_tag):
                 return True
-            # torchaudio: base version + local tag must match what we'd install for this device
+            # torchaudio: base version + local tag must match what we'd install for this device.
+            # Compare against the CAPPED version, not torch_version_matrix — above the
+            # ceiling the two differ by design, and comparing to torch would report
+            # "needs reinstall" on every single run and reinstall torch with it.
             torchaudio_full = self.get_package_version('torchaudio')
             if not torchaudio_full:
                 return True
             torchaudio_base = torchaudio_full.split('+', 1)[0]
-            if torchaudio_base != torch_version_matrix:
+            if torchaudio_base != self.torchaudio_version(torch_version_matrix):
                 return True
             m_ta = re.search(r'\+(.+)$', torchaudio_full)
             torchaudio_tag = m_ta.group(1) if m_ta else None
@@ -1590,11 +1802,13 @@ class DeviceInstaller():
                     if tag in ['unknown','unsupported']:
                         return 0
                     key = 'last' if self.python_version >= (3, 12) else 'base'
-                    torch_version_matrix = torch_matrix[tag].get(key) or torch_matrix[tag]['base']
-                    torchcodec_version_matrix = torch_matrix[tag]['codec']
-                    # macOS Intel was dropped from torch wheels after 2.2.2 — pin it before
-                    # any version comparison happens, otherwise _needs_reinstall() compares
-                    # against the matrix's 'last' and triggers an unnecessary reinstall.
+                    matrix_entry = torch_matrix.get(tag)
+                    if not matrix_entry:
+                        error = f'No torch_matrix entry for tag {tag}.'
+                        print(error)
+                        return 1
+                    torch_version_matrix = matrix_entry.get(key) or matrix_entry['base']
+                    torchcodec_version_matrix = matrix_entry.get('codec') or ''
                     if device_info['os'] == 'macosx_11_0' and device_info['arch'] == archs['X86_64']:
                         torch_version_matrix = '2.2.2'
                         torchcodec_version_matrix = ''  # 2.2.2 < 2.9, no torchcodec
@@ -1615,66 +1829,77 @@ class DeviceInstaller():
                             os_env = device_info['os']
                             arch = device_info['arch']
                             toolkit_version = ''.join(c for c in tag if c.isdigit())
-                            tag_dir = tag
+                            tag_dir = 'cpu' if device_info['name'] == devices['MPS']['proc'] else tag
                             py_major, py_minor = device_info['pyvenv']
                             tag_py = f'cp{py_major}{py_minor}'
+                            torchaudio_version_matrix = self.torchaudio_version(torch_version_matrix)
+                            is_cpu_aarch64_linux = (
+                                tag == devices['CPU']['proc']
+                                and device_info['os'] in ('manylinux_2_28', 'linux')
+                                and device_info['arch'] == archs['AARCH64']
+                            )
+                            #### torch/torchaudio installation
                             subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'filelock', 'typing-extensions', 'jinja2', 'fsspec', 'networkx', 'sympy'])
                             if device_info['name'] == devices['JETSON']['proc']:
                                 url = default_jetson_url
                                 torch_pkg = f"{url}/torch-v{toolkit_version}/torch-{torch_version_matrix}%2B{tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl"
-                                torchaudio_pkg = f"{url}/torchaudio-v{toolkit_version}/torchaudio-{torch_version_matrix}%2B{tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl"
-                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '--no-cache-dir', '--no-deps', torch_pkg])
-                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '--no-cache-dir', '--no-deps', torchaudio_pkg])
+                                torchaudio_pkg = f"{url}/torchaudio-v{toolkit_version}/torchaudio-{self.torchaudio_version(torchaudio_version_matrix)}%2B{tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl"
+                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', torch_pkg])
+                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', torchaudio_pkg])
                                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'scikit-learn'])
                                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'scipy'])
                             elif device_info['name'] == devices['ROCM']['proc'] and self.system == systems['WINDOWS']:
                                 url = default_pytorch_amd_url
-                                norm_tag = tag.replace('-rel-', '')
+                                real_tag = tag.replace('win-', '')
+                                url_tag = tag.replace('win-rocm', 'rocm-rel-')
                                 # rocm_sdk is required by torch ROCm wheels on Windows; install it first if missing
                                 import importlib.util
                                 if importlib.util.find_spec('rocm_sdk') is None:
-                                    rocm_ver = tag[len('rocm-rel-'):] if tag.startswith('rocm-rel-') else tag
+                                    rocm_ver = tag[len('win-rocm'):] if tag.startswith('win-rocm') else tag
                                     sdk_pkgs = [
-                                        f'{url}/{tag}/rocm_sdk_core-{rocm_ver}-py3-none-{os_env}_{arch}.whl',
-                                        f'{url}/{tag}/rocm_sdk_devel-{rocm_ver}-py3-none-{os_env}_{arch}.whl',
-                                        f'{url}/{tag}/rocm_sdk_libraries_custom-{rocm_ver}-py3-none-{os_env}_{arch}.whl',
-                                        f'{url}/{tag}/rocm-{rocm_ver}.tar.gz',
+                                        f'{url}/{url_tag}/rocm_sdk_core-{rocm_ver}-py3-none-{os_env}_{arch}.whl',
+                                        f'{url}/{url_tag}/rocm_sdk_devel-{rocm_ver}-py3-none-{os_env}_{arch}.whl',
+                                        f'{url}/{url_tag}/rocm_sdk_libraries_custom-{rocm_ver}-py3-none-{os_env}_{arch}.whl',
+                                        f'{url}/{url_tag}/rocm-{rocm_ver}.tar.gz',
                                     ]
                                     msg = f'Installing ROCm SDK {rocm_ver}…'
                                     print(msg)
                                     subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *sdk_pkgs])
-                                torch_pkg = f'{url}/{tag}/torch-{torch_version_matrix}%2B{norm_tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl'
-                                torchaudio_pkg = f'{url}/{tag}/torchaudio-{torch_version_matrix}%2B{norm_tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl'
-                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '--no-cache-dir', '--no-deps', torch_pkg, torchaudio_pkg])
+                                torch_pkg = f'{url}/{url_tag}/torch-{torch_version_matrix}%2B{real_tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl'
+                                torchaudio_pkg = f'{url}/{url_tag}/torchaudio-{self.torchaudio_version(torchaudio_version_matrix)}%2B{real_tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl'
+                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', torch_pkg, torchaudio_pkg])
                             else:
                                 url = default_pytorch_url
-                                tag_dir = 'cpu' if device_info['name'] == devices['MPS']['proc'] else tag
-                                torch_req = [f'torch=={torch_version_matrix}', f'torchaudio=={torch_version_matrix}', '--index-url', f'{url}/{tag_dir}']
-                                # Force only the torch/torchaudio wheels (variant override) with no
-                                # uninstall step, then a plain resolve pass to pull just the missing
-                                # CUDA deps. Already-correct nvidia-* wheels are left as-is — pip's
-                                # default only-if-needed strategy won't re-download or re-uninstall them.
-                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '--no-cache-dir', '--no-deps', *torch_req])
-                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *torch_req])
-                            if self.version_tuple(torch_version_matrix, 2) >= (2, 9):
-                                is_cpu_aarch64_linux = (
-                                    tag == devices['CPU']['proc']
-                                    and device_info['os'] in ('manylinux_2_28', 'linux')
-                                    and device_info['arch'] == archs['AARCH64']
-                                )
-                                has_native_codec = (
-                                    device_info['name'] == devices['CUDA']['proc']
-                                    and self.system != systems['WINDOWS']
-                                ) or tag == devices['CPU']['proc']
+                                torch_url_tag = tag_dir
+                                torchaudio_url_tag = 'cu130' if tag_dir.startswith('cu') and tag_dir[2:].isdigit() and int(tag_dir[2:]) > 130 else tag_dir
+                                if self.system == systems['WINDOWS'] and tag.startswith('win-cu'):
+                                    torch_url_tag = tag.replace('win-', '')
+                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', f'torch=={torch_version_matrix}', '--index-url', f'{url}/{torch_url_tag}'])
+                                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', f'torchaudio=={torchaudio_version_matrix}', '--index-url', f'{url}/{torchaudio_url_tag}'])
+                            #### torchcodec installation
+                            if self.version_tuple(torch_version_matrix, 2) >= (2, 9) and torchcodec_version_matrix:
                                 if is_cpu_aarch64_linux:
-                                    torchcodec_index_url = f"{default_torchcodec_arm_url}/torchcodec-{arch}-{tag_py}/torchcodec-{torchcodec_version_matrix}%2B{tag}-{tag_py}-{tag_py}-{os_env}_{arch}.whl"
-                                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '--no-cache-dir', '--no-deps', torchcodec_index_url])
+                                    torchcodec_wheel_url = f"{default_torchcodec_arm_url}/{tag}/torchcodec-{torchcodec_version_matrix}%2B{tag}-{tag_py}-{tag_py}-manylinux_2_27_{arch}.{os_env}_{arch}.whl"
+                                    rc = subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', torchcodec_wheel_url])
                                 else:
-                                    if has_native_codec:
-                                        torchcodec_index_url = f'{default_pytorch_url}/{tag_dir}'
+                                    if device_info['name'] == devices['XPU']['proc']:
+                                        msg = 'Installing torchcodec and the Intel XPU plugin…'
+                                        print(msg)
+                                        rc = subprocess.call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', f'torchcodec=={torchcodec_version_matrix}', f'torchcodec-xpu', 'torchlib-xpu', '--extra-index-url', f'{default_pytorch_url}/xpu'])
                                     else:
-                                        torchcodec_index_url = f'{default_pytorch_url}/cpu'
-                                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '--no-cache-dir', '--no-deps', f'torchcodec=={torchcodec_version_matrix}', '--index-url', torchcodec_index_url])
+                                        torchcodec_index_url = f'{default_pytorch_url}/cpu' if device_info['name'] == devices['ROCM']['proc'] else f'{default_pytorch_url}/{tag_dir}'
+                                        rc = subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-cache-dir', '--no-deps', f'torchcodec=={torchcodec_version_matrix}', '--index-url', torchcodec_index_url])
+                                if rc == 0:
+                                    try:
+                                        subprocess.check_call([sys.executable, '-c', 'from torchcodec.decoders import AudioDecoder'])
+                                    except subprocess.CalledProcessError:
+                                        error = 'torchcodec is installed but cannot be imported. Please check the log and check if ffmpeg is installed as shared and its path registered in your OS lib path.'
+                                        print(error)
+                                        return 1
+                                else:
+                                    error = 'torchcodec not installed! Please check the log and if ffmpeg is installed as shared and its path registered in your OS lib path.'
+                                    print(error)
+                                    return 1
                         except subprocess.CalledProcessError as e:
                             error = f'Failed to install torch package: {e}'
                             print(error)

@@ -3,9 +3,9 @@ ARG PYTHON_VERSION=3.12
 # ============================================================
 # HF SPACES — SINGLE STAGE BUILD + RUNTIME
 # ============================================================
-FROM python:${PYTHON_VERSION}-slim-bookworm
+FROM python:${PYTHON_VERSION}-slim-trixie
 
-ARG APP_VERSION=26.8.3
+ARG APP_VERSION=26.9.7
 ARG DEVICE_TAG=cpu
 ARG DOCKER_DEVICE_STR='{"name": "cpu", "os": "manylinux_2_28", "arch": "x86_64", "pyvenv": [3, 12], "tag": "cpu", "note": "HF Spaces CPU"}'
 ARG DOCKER_PROGRAMS_STR="curl ffmpeg mediainfo nodejs npm espeak-ng sox tesseract-ocr"
@@ -32,42 +32,33 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# ============================================================
-# System packages (build + runtime)
-# ============================================================
+# Enable Debian contrib, non-free, and non-free-firmware repositories, then install system packages
 RUN set -eux; \
+	if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+		sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources; \
+	else \
+		sed -i 's/main/main contrib non-free non-free-firmware/g' /etc/apt/sources.list; \
+	fi; \
 	apt-get update; \
-	apt-get install -y --no-install-recommends --allow-change-held-packages \
+	apt-get install -y --no-install-recommends \
 		gcc g++ make pkg-config cmake curl wget git bash xz-utils python3-dev \
 		fontconfig libfontconfig1 libfreetype6 libgl1 libegl1 libopengl0 \
 		libx11-6 libxext6 libxrender1 libxcb1 libxcb-render0 libxcb-shm0 \
-		libxcb-xfixes0 libxcb-cursor0 libgomp1 libsndfile1 \
-		${DOCKER_PROGRAMS_STR} tesseract-ocr-${ISO3_LANG}; \
+		libxcb-xfixes0 libxcb-cursor0 libgomp1 libsndfile1 libnss3 \
+		${DOCKER_PROGRAMS_STR} tesseract-ocr tesseract-ocr-eng; \
 	rm -rf /var/lib/apt/lists/*
 
-# ============================================================
-# Refresh pip to a known-good version
-# ============================================================
-RUN find /usr/local/lib/python3.12/site-packages/pip* -type f -delete 2>/dev/null; \
-	find /usr/local/lib/python3.12/site-packages/pip* -type l -delete 2>/dev/null; \
-	curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
-	python3 /tmp/get-pip.py --ignore-installed && \
-	rm -f /tmp/get-pip.py && \
-	pip install --no-cache-dir setuptools wheel
+RUN python3 -m pip install --no-cache-dir --upgrade pip 'setuptools<82' wheel
 
-# ============================================================
-# Rust toolchain (needed by some Python deps at build time)
-# ============================================================
-RUN bash -o pipefail -c '\
+# Rust toolchain
+RUN set -eux; \
 	if [ "${INSTALL_RUST}" = "1" ]; then \
 		curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable; \
 	else \
 		echo "Skipping Rust toolchain"; \
-	fi'
+	fi
 
-# ============================================================
-# Calibre (CLI only)
-# ============================================================
+# Calibre (CLI)
 RUN set -eux; \
 	wget -nv "${CALIBRE_INSTALLER_URL}" -O /tmp/calibre.sh; \
 	bash /tmp/calibre.sh; \
@@ -84,26 +75,22 @@ RUN set -eux; \
 
 COPY . /app
 
-# Ensure Unix line endings on all shell scripts
+# Ensure Unix line endings
 RUN find /app -type f \( -name "*.sh" -o -name "*.command" \) -exec sed -i 's/\r$//' {} \;
 
-# ============================================================
-# Build Python dependencies via project script
-# ============================================================
-RUN ./ebook2audiobook.command --script_mode build_docker --docker_device "$DOCKER_DEVICE_STR"
+ENV QT_QPA_PLATFORM=offscreen
 
-# ============================================================
-# Cleanup build-only packages and Rust toolchain to shrink image
-# ============================================================
+# Build Python dependencies
+RUN set -eux; \
+	./ebook2audiobook.command --script_mode build_docker --docker_device "${DOCKER_DEVICE_STR}"
+
+# Cleanup build-only packages and Rust toolchain
 RUN set -eux; \
 	rustup self uninstall -y 2>/dev/null || true; \
 	apt-get update; \
 	apt-get purge -y --auto-remove gcc g++ make pkg-config cmake wget git xz-utils python3-dev; \
 	rm -rf /var/lib/apt/lists/* /root/.cargo /root/.rustup /tmp/* || true
 
-# ============================================================
-# Named volumes — declare before chown so Docker creates them as root
-# ============================================================
 VOLUME \
 	/app/ebooks \
 	/app/audiobooks \
@@ -112,9 +99,7 @@ VOLUME \
 	/app/run \
 	/app/tmp
 
-# ============================================================
 # HF SPACES: create unprivileged user 1000 and fix permissions
-# ============================================================
 RUN useradd -m -u 1000 appuser && \
 	mkdir -p /app/ebooks /app/audiobooks /app/models /app/voices /app/run /app/tmp && \
 	chown -R appuser:appuser /app && \

@@ -496,7 +496,7 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] تحويل متعدد المعالجة
 - [x] تحويل مجلد كتب إلكترونية دفعي
 - [x] اكتشاف جهاز GPU
-- [x] قم بإزالة الضوضاء من أي صوت مرجعي للخلفية لتحميل الاستنساخ الصوتي،
+- [x] قم بإزالة الضوضاء من أي صوت مرجعي للخلفية لتحميل الاستنساخ الصوتي
 - [x] تحميل نموذج مضبوط بدقة مخصص
 - [ ] [إنشاء تطبيق iOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [إنشاء تطبيق android](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)

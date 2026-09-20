@@ -20,6 +20,13 @@ else
 	script_path="$0"
 fi
 
+case "$(uname -m)" in
+  x86_64|amd64)  ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *)             ARCH="$(uname -m)" ;;
+esac
+export ARCH
+export DOCKER_DEFAULT_PLATFORM="linux/${ARCH}"
 export BASHRCSOURCED="1"
 export SCRIPT_DIR="$(cd "$(dirname "$script_path")" >/dev/null 2>&1 && pwd -P)"
 export PYTHONUTF8="1"
@@ -38,14 +45,19 @@ export PATH="$E2A_LOCAL_BIN:$CALIBRE_INSTALL_DIR/calibre:$HOME/.cargo/bin:$CONDA
 export PODMAN_DESKTOP="0"
 export DOCKER_DESKTOP="0"
 export DOCKER_DEVICE_STR=""
+export RENDER_GID="${RENDER_GID:-}"
+export VIDEO_GID="${VIDEO_GID:-}"
 export DEVICE_INFO_STR=""
 export HOMEBREW_NO_ENV_HINTS="1"
 export E2A_ALLOW_SYSTEM_INSTALL="${E2A_ALLOW_SYSTEM_INSTALL:-0}"
+export SUDO="sudo"
+export SETVARS_CALL=""
+export ETVARS_ARGS=""
+export SETVARS_COMPLETED=""
 
 NATIVE="native"
 BUILD_DOCKER="build_docker"
 FULL_DOCKER="full_docker"
-ARCH=$(uname -m)
 MIN_PYTHON_VERSION="3.10"
 MAX_PYTHON_VERSION="3.12"
 PYTHON_VERSION="$MAX_PYTHON_VERSION"
@@ -213,7 +225,7 @@ fi
 ############### FUNCTIONS ##############
 
 ###### DESKTOP APP
-function has_no_display {
+has_no_display() {
 	if [[ "${OSTYPE:-}" == darwin* ]]; then
 		if pgrep -x WindowServer >/dev/null 2>&1 &&
 		   [[ "$(launchctl managername 2>/dev/null)" == "Aqua" ]]; then
@@ -256,7 +268,7 @@ function has_no_display {
 	fi
 }
 
-function open_desktop_app {
+open_desktop_app() {
 	(
 		host=127.0.0.1
 		port=7860
@@ -287,7 +299,7 @@ function open_desktop_app {
 	) &
 }
 
-function mac_app {
+mac_app() {
 	local APP_BUNDLE="$HOME/Applications/$APP_NAME.app"
 	local CONTENTS="$APP_BUNDLE/Contents"
 	local MACOS="$CONTENTS/MacOS"
@@ -361,7 +373,7 @@ PLIST
 	open_desktop_app
 }
 
-function linux_app {
+linux_app() {
 	local MENU_ENTRY="$HOME/.local/share/applications/$APP_NAME.desktop"
 	local DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
 	local DESKTOP_SHORTCUT="$DESKTOP_DIR/$APP_NAME.desktop"
@@ -391,7 +403,7 @@ EOF
 	open_desktop_app
 }
 
-function check_desktop_app {
+check_desktop_app() {
 	if [[ " ${ARGS[*]} " == *" --headless "* ]] || ! has_no_display; then
 		return 0
 	fi
@@ -404,7 +416,7 @@ function check_desktop_app {
 }
 #################
 
-function get_iso3_lang {
+get_iso3_lang() {
 	case "$1" in
 		en) echo "eng" ;;
 		fr) echo "fra" ;;
@@ -432,7 +444,7 @@ function get_iso3_lang {
 	esac
 }
 
-function check_python {
+check_python() {
     if ! command -v python3 &>/dev/null; then
         echo 'Python is not installed.'
         return 1
@@ -455,7 +467,7 @@ function check_python {
     return 0
 }
 
-function check_required_programs {
+check_required_programs() {
 	local programs=("$@")
 	programs_missing=()
 	for program in "${programs[@]}"; do
@@ -546,7 +558,7 @@ function install_user_calibre {
 	command -v ebook-convert >/dev/null 2>&1
 }
 
-function install_programs {
+install_programs() {
 	if [[ "${OSTYPE-}" != darwin* ]]; then
 		if [[ " ${programs_missing[*]} " == *" calibre "* ]]; then
 			install_user_calibre || true
@@ -565,6 +577,7 @@ function install_programs {
 		echo "  E2A_ALLOW_SYSTEM_INSTALL=1 $0"
 		return 1
 	fi
+
 	if [[ "${OSTYPE-}" == darwin* ]]; then
 		echo -e "\e[33mInstalling required programs…\e[0m"
 		PACK_MGR="brew install --force"
@@ -734,9 +747,9 @@ EOF
 	fi
 }
 
-function check_conda {
+check_conda() {
 
-    function compare_versions {
+    compare_versions() {
         local ver1=$1
         local ver2=$2
         IFS='.' read -r v1_major v1_minor <<<"$ver1"
@@ -839,8 +852,10 @@ function check_conda {
             conda clean --packages --tarballs -y
         fi
         conda create --prefix "$SCRIPT_DIR/$PYTHON_ENV" -c conda-forge python=$PYTHON_VERSION pip -y || return 1
+		set +u
         conda activate "$SCRIPT_DIR/$PYTHON_ENV" || return 1
-        if [[ "${OSTYPE-}" != darwin* && "$model" == *jetson* ]]; then
+        set -u
+		if [[ "${OSTYPE-}" != darwin* && "$model" == *jetson* ]]; then
             # gfortran needed to compile scipy from pip on Jetson
             conda install -c conda-forge gfortran -y || return 1
         fi
@@ -858,7 +873,7 @@ function check_conda {
     return 0
 }
 
-function check_docker {
+check_docker() {
 	if [[ "$DOCKER_MODE" == "podman" ]]; then
 		if command -v podman-compose &> /dev/null; then
 			PODMAN_DESKTOP="1"
@@ -875,13 +890,13 @@ function check_docker {
 	return 1
 }
 
-function install_python_packages {
+install_python_packages() {
 	echo "Installing python dependencies…"
 	PYTHONPATH="$SCRIPT_DIR" python3 -c "import sys; from lib.classes.device_installer import DeviceInstaller; device = DeviceInstaller(); sys.exit(device.install_python_packages())"
 	return $?
 }
 
-function check_device_info {
+check_device_info() {
 	local ARG="$1"
 	python3 - << EOF
 from lib.classes.device_installer import DeviceInstaller
@@ -894,7 +909,7 @@ raise SystemExit(1)
 EOF
 }
 
-function json_get {
+json_get() {
     local key="$1"
     echo "$DEVICE_INFO_STR" | python3 -c "
 import sys, json
@@ -903,7 +918,7 @@ print(data['$key'])
 "
 }
 
-function install_device_packages {
+install_device_packages() {
 	local ARG="$1"
 	python3 - "$ARG" << 'EOF'
 import sys,json
@@ -915,7 +930,7 @@ sys.exit(exit_code)
 EOF
 }
 
-function check_sitecustomized {
+check_sitecustomized() {
 	local src_pyfile="$SCRIPT_DIR/components/sitecustomize.py"
 	local site_packages_path=$(python3 -c "import sysconfig;print(sysconfig.get_paths()['purelib'])")
 	local dst_pyfile="$site_packages_path/sitecustomize.py"
@@ -930,18 +945,60 @@ function check_sitecustomized {
 	return 0
 }
 
-function build_docker_image {
+get_dri_gids() {
+	local node
+	RENDER_GID=""
+	VIDEO_GID=""
+	if [[ "${OSTYPE-}" == linux* ]]; then
+		for node in /dev/dri/renderD*; do
+			if [[ ! -c "$node" ]]; then
+				continue
+			fi
+			RENDER_GID="$(stat -c '%g' "$node" 2>/dev/null || true)"
+			if [[ -n "$RENDER_GID" ]]; then
+				break
+			fi
+		done
+		for node in /dev/dri/card*; do
+			if [[ ! -c "$node" ]]; then
+				continue
+			fi
+			VIDEO_GID="$(stat -c '%g' "$node" 2>/dev/null || true)"
+			if [[ -n "$VIDEO_GID" ]]; then
+				break
+			fi
+		done
+	fi
+	export RENDER_GID VIDEO_GID
+	{
+		if [[ -n "$RENDER_GID" ]]; then
+			printf 'RENDER_GID=%s\n' "$RENDER_GID"
+		fi
+		if [[ -n "$VIDEO_GID" ]]; then
+			printf 'VIDEO_GID=%s\n' "$VIDEO_GID"
+		fi
+	} > "$SCRIPT_DIR/.env"
+	return 0
+}
+
+build_docker_image() {
 	local ARG="$1"
-	if [[ "$ARG" == "" ]]; then
-		echo "build_docker_image() error: ARG is empty"
+
+	if [[ -z "$ARG" ]]; then
+		echo "build_docker_image() error: ARG is empty" >&2
 		return 1
 	fi
+
 	local cmd_options=""
 	local py_vers
+
 	# Base-image Python MUST match the wheel ABI in the device profile: derive it from
 	# pyvenv in $ARG (the single source of truth), not from $DEVICE_TAG.
 	py_vers="$(printf '%s' "$ARG" | python3 -c 'import json,sys; v=json.load(sys.stdin).get("pyvenv"); print(f"{v[0]}.{v[1]}" if v else "")' 2>/dev/null)"
 	[[ -z "$py_vers" ]] && py_vers="$PYTHON_VERSION"
+
+	ISO3_LANG="$(get_iso3_lang "${OS_LANG:-en}")"
+
 	# Compose reads build args ONLY from the compose file build.args, resolved from the
 	# environment -- it ignores PODMAN_BUILD_ARGS and loose --build-arg flags. Export every
 	# value the Dockerfile ARGs consume so the device profile + matching Python reach the
@@ -949,7 +1006,9 @@ function build_docker_image {
 	export PYTHON_VERSION="$py_vers"
 	export DOCKER_DEVICE_STR="$ARG"
 	export DOCKER_PROGRAMS_STR="${DOCKER_PROGRAMS[*]}"
-	export CALIBRE_INSTALLER_URL ISO3_LANG
+	export CALIBRE_INSTALLER_URL
+	export ISO3_LANG
+
 	case "$DEVICE_TAG" in
 		cpu)		cmd_options="";;
 		cu*)		cmd_options="--gpus all" ;;
@@ -957,8 +1016,9 @@ function build_docker_image {
 		jetson*)	cmd_options="--runtime nvidia --gpus all" ;;
 		xpu)		cmd_options="--device=/dev/dri" ;;
 	esac
-	ISO3_LANG="$(get_iso3_lang "${OS_LANG:-en}")"
+
 	DOCKER_IMG_NAME="${DOCKER_IMG_NAME}:${DEVICE_TAG}"
+
 	case "$DEVICE_TAG" in
 		cpu|mps)	COMPOSE_PROFILES=cpu ;;
 		cu*)		COMPOSE_PROFILES=cuda ;;
@@ -968,24 +1028,34 @@ function build_docker_image {
 		*)		COMPOSE_PROFILES=cpu ;;
 	esac
 	export COMPOSE_PROFILES
+
+	get_dri_gids
 	SERVICE="ebook2audiobook-${COMPOSE_PROFILES}"
+
 	if [[ "$DOCKER_MODE" == "podman" ]]; then
-		if ! command -v podman-compose &>/dev/null || ! podman-compose -f podman-compose.yml config &>/dev/null; then
-			echo "ERROR: podman-compose is not installed or podman-compose.yml is not valid"
+		if ! command -v podman >/dev/null 2>&1; then
+			echo "ERROR: podman is not installed" >&2
 			return 1
+		fi
+		# podman-compose is only needed to RUN the image, not to build it
+		if ! command -v podman-compose >/dev/null 2>&1 || ! podman-compose -f podman-compose.yml config >/dev/null 2>&1; then
+			echo "WARNING: podman-compose is missing or podman-compose.yml is not valid -- the image will still build, but you will not be able to run it with podman-compose" >&2
 		fi
 	elif [[ "$DOCKER_MODE" == "compose" ]]; then
 		if ! docker compose config --services 2>/dev/null | grep -q .; then
-			echo "ERROR: docker compose found no services or yml file is not valid."
+			echo "ERROR: docker compose found no services or yml file is not valid." >&2
 			return 1
 		fi
 	fi
+
 	if [[ "$DOCKER_MODE" == "podman" ]]; then
-		echo "--> Using podman-compose"
-		export PODMAN_BUILD_ARGS=$(printf ' %q' \
-			--format docker \
-			--no-cache \
+		echo "--> Using podman build"
+		podman \
+			build \
 			--network=host \
+			--no-cache \
+			-t "$DOCKER_IMG_NAME" \
+			-f Dockerfile \
 			--build-arg PYTHON_VERSION="$py_vers" \
 			--build-arg APP_VERSION="$APP_VERSION" \
 			--build-arg DEVICE_TAG="$DEVICE_TAG" \
@@ -993,8 +1063,7 @@ function build_docker_image {
 			--build-arg DOCKER_PROGRAMS_STR="${DOCKER_PROGRAMS[*]}" \
 			--build-arg CALIBRE_INSTALLER_URL="$CALIBRE_INSTALLER_URL" \
 			--build-arg ISO3_LANG="$ISO3_LANG" \
-		)
-		BUILD_NAME="$DOCKER_IMG_NAME" podman-compose -f podman-compose.yml --profile $COMPOSE_PROFILES build || return 1
+			. || return 1
 		echo "Docker image ready! to run your docker: "
 		echo "Podman Compose:"
 		echo "	GUI mode:"
@@ -1005,7 +1074,6 @@ function build_docker_image {
 		echo "--> Using docker compose"
 		BUILD_NAME="$DOCKER_IMG_NAME" docker compose \
 			-f docker-compose.yml \
-			--progress plain \
 			build \
 			--no-cache \
 			--build-arg PYTHON_VERSION="$py_vers" \
@@ -1042,9 +1110,9 @@ function build_docker_image {
 		docker image prune --force
 		echo "Docker image ready! to run your docker: "
 		echo "	GUI mode:"
-		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" ${cmd_options}--rm -it -p 7860:7860 $DOCKER_IMG_NAME"
+		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" ${cmd_options} --rm -it -p 7860:7860 $DOCKER_IMG_NAME"
 		echo "	Headless mode:"
-		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" -v \"/my/real/ebooks/folder/absolute/path:/app/custom_ebooks\" -v \"/my/real/output/folder/absolute/path:/app/audiobooks\" ${cmd_options}--rm -it -p 7860:7860 $DOCKER_IMG_NAME --headless --ebook /app/custom_ebooks/myfile.pdf [--voice /app/my/voicepath/voice.mp3 etc..]"		
+		echo "	docker run -v \"./ebooks:/app/ebooks\" -v \"./audiobooks:/app/audiobooks\" -v \"./models:/app/models\" -v \"./voices:/app/voices\" -v \"./tmp:/app/tmp\" -v \"/my/real/ebooks/folder/absolute/path:/app/custom_ebooks\" -v \"/my/real/output/folder/absolute/path:/app/audiobooks\" ${cmd_options} --rm -it -p 7860:7860 $DOCKER_IMG_NAME --headless --ebook /app/custom_ebooks/myfile.pdf [--voice /app/my/voicepath/voice.mp3 etc..]"
 	fi
 }
 
@@ -1067,9 +1135,9 @@ else
                 DEVICE_TAG=$(json_get "tag")
 			fi
 			if [[ "$PODMAN_DESKTOP" == "1" ]]; then
-				if podman image exists "localhost/%DOCKER_IMG_NAME%:!DEVICE_TAG!" >/dev/null 2>&1; then
-					echo "[STOP] Podman image '${DOCKER_IMG_NAME}:${DEVICE_TAG}' already exists. Aborting build."
-					echo "Delete it using: podman rmi -f localhost/%DOCKER_IMG_NAME%:!DEVICE_TAG!"
+				if podman image exists "localhost/${DOCKER_IMG_NAME}:${DEVICE_TAG}" >/dev/null 2>&1; then
+					echo "[STOP] Podman image 'localhost/${DOCKER_IMG_NAME}:${DEVICE_TAG}' already exists. Aborting build."
+					echo "Delete it using: podman rmi -f localhost/${DOCKER_IMG_NAME}:${DEVICE_TAG}"
 					exit 1
 				fi
 			elif [[ "$DOCKER_DESKTOP" == "1" ]]; then
@@ -1120,7 +1188,9 @@ EOF
 		check_required_programs "${HOST_PROGRAMS[@]}" || install_programs || exit 1
 		check_conda || { echo -e "\e[31m=============== check_conda() failed.\e[0m"; exit 1; }
 		source "$CONDA_ENV" || exit 1
+		set +u
 		conda activate "$SCRIPT_DIR/$PYTHON_ENV" || { echo -e "\e[31m=============== conda activate failed.\e[0m"; exit 1; }
+		set -u
 		check_sitecustomized || exit 1
 		check_desktop_app || exit 1
 		python3 -u "$SCRIPT_DIR/app.py" --script_mode "$SCRIPT_MODE" "${ARGS[@]}" || exit 1

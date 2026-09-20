@@ -496,7 +496,7 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Prevod s multiprocessingom
 - [x] Dávkový prevod priečinka e-kníh
 - [x] Detekcia zariadenia GPU
-- [x] Znížiť šum akéhokoľvek referenčného zvuku na pozadí na nahranie klonovania hlasu,
+- [x] Znížiť šum akéhokoľvek referenčného zvuku na pozadí pre nahrávanie hlasového klonovania
 - [x] Vlastné doladené nahrávanie modelu
 - [ ] [Vytvoriť aplikáciu pre iOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Vytvoriť aplikáciu pre Android](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)

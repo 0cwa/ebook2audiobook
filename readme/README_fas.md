@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] تبدیل چندپردازشی
 - [x] تبدیل دسته‌ای پوشه کتاب الکترونیکی
 - [x] تشخیص دستگاه GPU
-- [x] حذف نویز از هرگونه صدای مرجع پس‌زمینه برای بارگذاری شبیه‌سازی صدا،
-- [x] آپلود مدل سفارشی تنظیم‌شده دقیق
+- [x] حذف نویز هرگونه صدای مرجع پس‌زمینه برای آپلود شبیه‌سازی صدا
+- [x] آپلود مدل سفارشی و تنظیم‌شده
 - [ ] [ساخت یک اپلیکیشن iOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [ساخت یک اپلیکیشن android](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

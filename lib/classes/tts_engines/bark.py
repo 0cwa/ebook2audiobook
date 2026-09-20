@@ -115,6 +115,9 @@ class Bark(TTSUtils, TTSRegistry, name='bark'):
                 bark_model.config.LOCAL_MODEL_PATHS['hubert_tokenizer'],
                 map_location=bark_model.device
             )
+            # Both are created fresh per call and default to train mode.
+            hubert_model.eval()
+            tokenizer.eval()
             with torch.inference_mode():
                 semantic_vectors = hubert_model.forward(audio, input_sample_hz=bark_model.config.sample_rate)
             semantic_tokens = tokenizer.get_token(semantic_vectors)
@@ -123,6 +126,7 @@ class Bark(TTSUtils, TTSRegistry, name='bark'):
                 'coarse_prompt': codes[:2, :],
                 'fine_prompt': codes
             }
+
         bark_model._generate_voice = _generate_voice_cpu_safe
         # --- patch 2: clone_voice/load_voice_file (migrate cached tensors to device) ---
         orig_clone_voice = bark_model.clone_voice

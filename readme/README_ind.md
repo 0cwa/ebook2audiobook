@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Konversi multiproses
 - [x] Konversi folder eBook batch
 - [x] Deteksi Perangkat GPU
-- [x] Denoise audio referensi latar belakang apa pun untuk mengunggah kloning suara,
-- [x] Unggahan model tersuai tersuai
+- [x] Denoise audio referensi latar belakang apa pun untuk unggahan kloning suara
+- [x] Unggahan model fine - tuned kustom
 - [ ] [Membuat aplikasi IOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Membuat aplikasi android](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

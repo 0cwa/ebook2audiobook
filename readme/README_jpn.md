@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] マルチプロセス変換
 - [x] バッチ電子書籍フォルダ変換
 - [x] GPUデバイス検出
-- [x] 音声クローニングをアップロードするためのバックグラウンドレファレンスオーディオのノイズ除去、
-- [x] カスタムの微調整されたモデルのアップロード
+- [x] 音声クローンアップロードのバックグラウンドリファレンス音声をノイズ除去する
+- [x] カスタム微調整されたモデルのアップロード
 - [ ] [iOSアプリを作成](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [androidアプリを作成](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

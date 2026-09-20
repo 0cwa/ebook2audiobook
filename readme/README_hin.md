@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] मल्टीप्रोसेसिंग रूपांतरण
 - [x] बैच ई-बुक फ़ोल्डर रूपांतरण
 - [x] GPU डिवाइस पहचान
-- [x] वॉयस क्लोनिंग अपलोड करने के लिए किसी भी बैकग्राउंड रेफ़रेंस ऑडियो को डीनोइज़ करें
-- [x] कस्टम ठीक ट्यून मॉडल अपलोड
+- [x] वॉयस क्लोनिंग अपलोड के लिए किसी भी बैकग्राउंड रेफ़रेंस ऑडियो को डीनोइज़ करें
+- [x] कस्टम फ़ाइन - ट्यून मॉडल अपलोड
 - [ ] [एक iOS ऐप बनाना](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [एक android ऐप बनाना](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

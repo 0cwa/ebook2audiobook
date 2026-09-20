@@ -1,6 +1,18 @@
 # docker-compose.yml — universal across cpu / cuda / rocm / xpu (+ jetson),
 # on both amd64 and arm64. Pick the accelerator with --profile.
 #
+# LOCAL BUILD ONLY — the app image is never pulled from a registry:
+# `pull_policy: never` means `up` uses the local image or fails loudly. The
+# image is produced by ebook2audiobook.command --script_mode build_docker
+# (DOCKER_MODE=compose runs `docker compose build` against the build: block
+# below). Only the FROM base (python:<ver>-slim-trixie) is fetched remotely.
+#
+# The build context is the WHOLE repo, not just the Dockerfile: the Dockerfile
+# does `COPY . /app` and then runs
+#   ./ebook2audiobook.command --script_mode build_docker --docker_device "$DOCKER_DEVICE_STR"
+# so this file only works from the root of a full checkout, never from a
+# directory holding a lone downloaded Dockerfile.
+#
 #   docker compose                       --profile cpu    up
 #   DEVICE_TAG=cu130    docker compose   --profile cuda   up
 #   DEVICE_TAG=jetson51 docker compose   --profile jetson up
@@ -8,10 +20,16 @@
 #   DEVICE_TAG=xpu      docker compose   --profile xpu    up
 #
 # Requires Compose V2 (the `docker compose` plugin), NOT the legacy
-# `docker-compose` v1 — only V2 honors deploy.resources.devices outside Swarm.
+# `docker-compose` v1 — only V2 honors deploy.resources.devices outside Swarm
+# and `pull_policy`. Do NOT use `pull_policy: build` here: it re-builds on
+# every `up`, and `COPY . /app` invalidates the cache for the expensive
+# build_docker layer on any source change.
 #
-# Architecture (amd64 vs arm64) is NOT a profile: it is the host you run on plus
-# the matching DEVICE_TAG image. The device wiring below is arch-agnostic.
+# Architecture (amd64 vs arm64) is NOT a profile: it is the host you build on
+# plus the matching DEVICE_TAG. There is deliberately no `platform:` key here —
+# a hardcoded linux/amd64 default would silently drag a local build through
+# qemu on the Jetson. Export DOCKER_DEFAULT_PLATFORM yourself (needs buildx +
+# binfmt) if you really want to cross-build.
 #
 # Confirm a profile expands (and that extends merged) before running it:
 #   DEVICE_TAG=rocm docker compose --profile rocm config
@@ -20,12 +38,25 @@ services:
   # --- shared base: exists only for extends, never runs (dummy _base profile)
   ebook2audiobook-base:
     image: athomasson2/ebook2audiobook:${DEVICE_TAG:-cpu}
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        APP_VERSION: ${APP_VERSION:-26.8.3}
+        APP_VERSION: ${APP_VERSION:-26.9.7}
         DEVICE_TAG: ${DEVICE_TAG:-cpu}
+        # A null value means "resolve from the environment at build time, and
+        # if unset leave the Dockerfile default alone". These are exactly the
+        # vars build_docker_image() in ebook2audiobook.command exports. Without
+        # them the Dockerfile keeps its own defaults — DOCKER_DEVICE_STR is
+        # cuda/cu130/x86_64 — so a --profile cpu build would still resolve the
+        # cuda wheel set.
+        PYTHON_VERSION:
+        DOCKER_DEVICE_STR:
+        DOCKER_PROGRAMS_STR:
+        CALIBRE_INSTALLER_URL:
+        ISO3_LANG:
+        INSTALL_RUST:
     working_dir: /app
     entrypoint: ["bash", "ebook2audiobook.command", "--script_mode", "full_docker"]
     tty: true
@@ -86,7 +117,7 @@ services:
       - /dev/dri
     group_add:
       - video
-      - render
+      - "${RENDER_GID:-44}"
 
   # --- Intel XPU (oneAPI / IPEX) --------------------------------------------
   ebook2audiobook-xpu:
@@ -96,4 +127,4 @@ services:
     devices:
       - /dev/dri
     group_add:
-      - render
+      - "${RENDER_GID:-44}"

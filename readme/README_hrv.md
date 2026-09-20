@@ -496,7 +496,7 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Pretvaranje s višeprocesnom obradom
 - [x] Skupno pretvaranje mape e-knjiga
 - [x] Otkrivanje GPU uređaja
-- [x] Denoizirati bilo koji pozadinski referentni zvuk za prijenos glasovnog kloniranja,
+- [x] Denoizirati bilo koji pozadinski referentni zvuk za prijenos glasovnog kloniranja
 - [x] Prijenos prilagođenog precizno podešenog modela
 - [ ] [Napraviti iOS aplikaciju](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Napraviti Android aplikaciju](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)

@@ -216,6 +216,7 @@ class NonTextFilter:
     def _filter_sentences(self, text:str)->str:
         kept:list = []
         punct = self._TEXT_PUNCT
+        hard = punctuation_split_hard_set
         no_space = (
             self._no_space if self._no_space is not None
             else self._detect_no_space(text)
@@ -242,7 +243,21 @@ class NonTextFilter:
                     continue
             else:
                 words = [w for w in re.split(r'\s+', s) if any(c.isalnum() for c in w)]
-                if len(words) < self.min_words:
+                # SML placeholders (SMLZZ0ZZSML…) are not prose words
+                real_words = [w for w in words if not self._PLACEHOLDER_RE.fullmatch(w)]
+                if not real_words:
+                    # fragment holds only SML tags — keep it so tags survive
+                    kept.append(s)
                     continue
+                if len(real_words) < self.min_words:
+                    # FIX: a single alphabetic word carrying sentence-ending
+                    # punctuation ("Ten?", "Really?!?", "Well...") is a valid
+                    # spoken interjection, not noise. Real noise (lone digits,
+                    # stray symbols) contains no letters at all.
+                    if not (
+                        any(c.isalpha() for c in real_words[0])
+                        and any(c in hard for c in s)
+                    ):
+                        continue
             kept.append(s)
         return ' '.join(kept)

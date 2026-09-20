@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Многопроцессорное преобразование
 - [x] Пакетное преобразование папок электронных книг
 - [x] Обнаружение устройства
-- [x] Снимите шум с любого фонового эталонного аудио для загрузки голосового клонирования,
-- [x] Загрузка пользовательской тонко настроенной модели
+- [x] Удалите шум из любого фонового эталонного аудио для загрузки голосового клонирования
+- [x] Загрузка индивидуально настроенной модели
 - [ ] [Make a IOS app](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Make an android app](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

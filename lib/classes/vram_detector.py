@@ -110,7 +110,7 @@ class VRAMDetector:
                     return json.dumps(info, indent=2) if as_json else info
 
             # ─────────────────────────── ROCm (AMD)
-            elif hasattr(torch, 'hip') and torch.hip.is_available():
+            elif device == 'rocm' and hasattr(torch, 'hip') and torch.hip.is_available():
                 free, total = torch.hip.mem_get_info()
                 alloc = torch.hip.memory_allocated()
                 resv = torch.hip.memory_reserved()
@@ -130,7 +130,7 @@ class VRAMDetector:
                 return json.dumps(info, indent=2) if as_json else info
 
             # ─────────────────────────── Intel XPU (oneAPI)
-            elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            elif device == 'xpu' and hasattr(torch, 'xpu') and torch.xpu.is_available():
                 free, total = torch.xpu.mem_get_info()
                 alloc = torch.xpu.memory_allocated()
                 resv = torch.xpu.memory_reserved()
@@ -150,7 +150,7 @@ class VRAMDetector:
                 return json.dumps(info, indent=2) if as_json else info
 
             # ─────────────────────────── Apple MPS (Metal)
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            elif device == 'mps' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 mem = psutil.virtual_memory()
                 info = {
                     "os": self.system,
@@ -195,12 +195,14 @@ class VRAMDetector:
         if as_json:
             return json.dumps(info, indent=2)
 
-        total_vram_bytes = info.get('total_bytes', 4096)
+        # both defaults are in BYTES, like the keys they stand in for: 4096 alone
+        # was 4 KB, which _ceil_gb rounded to 1GB and passed off as the total.
+        total_vram_bytes = info.get('total_bytes', 4 * 1024 ** 3)
         free_vram_bytes = info.get('free_bytes', 0)
         info['total_vram_gb'] = info.get('total_vram_gb', self._ceil_gb(total_vram_bytes))
         info['free_vram_gb'] = info.get('free_vram_gb', self._ceil_gb(free_vram_bytes))
 
-        return {
-            "total_vram_gb": info['total_vram_gb'],
-            "free_vram_gb": info['free_vram_gb']
-        }
+        # same shape as the accelerator branches above, which all return the full
+        # dict: callers reaching for os / device_type / device_name / free_bytes /
+        # total_bytes used to get None here and nowhere else.
+        return info

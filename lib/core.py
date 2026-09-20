@@ -6,8 +6,8 @@
 # WHICH IS LESS GENERIC FOR THE DEVELOPERS
 
 import argparse, asyncio, csv, difflib, fnmatch, sqlite3, hashlib, io, json, math, os, pytesseract, gc
-import random, shutil, subprocess, sys, tempfile, threading, time, uvicorn, copy
-import traceback, socket, unicodedata, urllib.request, uuid, zipfile, fitz, multiprocessing
+import random, shutil, subprocess, sys, tempfile, threading, time, uvicorn, copy, base64
+import traceback, socket, unicodedata, urllib.request, uuid, zipfile, pymupdf, multiprocessing
 import ebooklib, psutil, requests, stanza, importlib, queue, pykakasi
 import regex as re, gradio as gr
 
@@ -990,7 +990,7 @@ def convert2epub(session_id:str)->bool:
             elif file_ext == '.pdf':
                 msg = 'File input is a PDF. flatten it in XHTML…'
                 print(msg)
-                doc = fitz.open(file_input)
+                doc = pymupdf.open(file_input)
                 file_meta = doc.metadata
                 filename_noext = os.path.splitext(os.path.basename(session['ebook']))[0]
                 title = file_meta.get('title') or filename_noext
@@ -2093,6 +2093,16 @@ def get_sentences(session_id:str, text:str)->list|None:
         print(f'get_sentences() error: {e}')
         return None
 
+def natural_sort_key(path:str)->list:
+    """Natural sort key on the file BASENAME only.
+    Full paths must NOT be sorted: gradio uploaded files live in per-file
+    hashed cache dirs (<cache>/<hash>/<name>.<ext>) whose hash would
+    dominate the order. Digit runs compare numerically so
+    'volume-2' < 'volume-10'."""
+    name = os.path.basename(str(path)).casefold()
+    return [int(chunk) if chunk.isdigit() else chunk
+            for chunk in re.split(r'(\d+)', name)]
+
 def get_sanitized(str:str, replacement:str='_')->str:
     str = str.replace('&', 'And')
     forbidden_chars = r'[<>:"/\\|?*\x00-\x1F ()]'
@@ -2468,12 +2478,22 @@ def foreign2latin(text:str, base_lang:str)->str:
             buf.append(_romanize(t))
         else:
             buf.append(t)
-    out:str = ''
+    out: str = ''
+    joiners = ("'", "\u2018", "\u2019")  # stay glued to the next word (contractions)
     for i, t in enumerate(buf):
         if i == 0:
             out += t
         else:
-            if re.match(r"^\w+$", buf[i - 1]) and re.match(r"^\w+$", t):
+            prev = buf[i - 1]
+            prev_is_word = bool(re.match(r"^\w+$", prev))
+            curr_is_word = bool(re.match(r"^\w+$", t))
+            prev_is_protected = prev in protected
+            curr_is_protected = t in protected
+            if prev_is_word and curr_is_word:
+                out += ' ' + t
+            elif prev_is_protected or curr_is_protected:
+                out += ' ' + t
+            elif not prev_is_word and not prev_is_protected and curr_is_word and prev not in joiners:
                 out += ' ' + t
             else:
                 out += t
@@ -2554,7 +2574,7 @@ def normalize_text(text:str, lang:str, lang_iso1:str, tts_engine:str)->str:
             
     # Remove emojis
     emoji_pattern = re.compile(f"[{''.join(emojis_list)}]+", flags=re.UNICODE)
-    emoji_pattern.sub('', text)
+    text = emoji_pattern.sub('', text)
     if lang in abbreviations_mapping:
         mapping = abbreviations_mapping[lang]
         # Sort keys by descending length so longer ones match first
@@ -3176,29 +3196,77 @@ def combine_audio_chapters(session_id:str)->list[str]|None:
                 error = f'{Path(final_file).name} is corrupted or does not exist'
                 print(error)
                 return False
-            if session['output_format'] in ['mp3', 'm4a', 'm4b', 'mp4'] and session['cover'] is not None:
+            if session['cover'] is not None:
                 cover_path = session['cover']
                 msg = f'Adding cover {cover_path} into the final audiobook file…'
                 print(msg)
-                audio = None
-                if session['output_format'] == 'mp3':
-                    from mutagen.mp3 import MP3
-                    from mutagen.id3 import ID3, APIC, error as id3_error
-                    audio = MP3(final_file, ID3=ID3)
-                    try:
-                        audio.add_tags()
-                    except id3_error:
-                        pass
-                    with open(cover_path, 'rb') as img:
-                        audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=img.read()))
-                elif session['output_format'] in ['mp4', 'm4a', 'm4b']:
-                    from mutagen.mp4 import MP4, MP4Cover
-                    audio = MP4(final_file)
+                if session['output_format'] == 'webm':
+                    msg = 'Cover embedding skipped: mutagen has no Matroska/WebM writer'
+                    print(msg)
+                else:
                     with open(cover_path, 'rb') as f:
                         cover_data = f.read()
-                    audio['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
-                if audio is not None:
-                    audio.save()
+                    mime = 'image/png' if Path(cover_path).suffix.lower() == '.png' else 'image/jpeg'
+                    width, height, depth = 0, 0, 24
+                    try:
+                        from PIL import Image
+                        with Image.open(cover_path) as img:
+                            width, height = img.size
+                            depth = len(img.getbands()) * 8
+                    except Exception:
+                        pass
+                    audio = None
+                    if session['output_format'] == 'mp3':
+                        from mutagen.mp3 import MP3
+                        from mutagen.id3 import ID3, APIC, error as id3_error
+                        audio = MP3(final_file, ID3=ID3)
+                        try:
+                            audio.add_tags()
+                        except id3_error:
+                            pass
+                        audio.tags.delall('APIC')
+                        audio.tags.add(APIC(encoding=3, mime=mime, type=3, desc='Cover', data=cover_data))
+                    elif session['output_format'] in ['mp4', 'm4a', 'm4b', 'mov']:
+                        from mutagen.mp4 import MP4, MP4Cover
+                        img_fmt = MP4Cover.FORMAT_PNG if mime == 'image/png' else MP4Cover.FORMAT_JPEG
+                        audio = MP4(final_file)
+                        audio['covr'] = [MP4Cover(cover_data, imageformat=img_fmt)]
+                    elif session['output_format'] in ['flac', 'ogg']:
+                        from mutagen.flac import Picture
+                        pic = Picture()
+                        pic.type = 3
+                        pic.mime = mime
+                        pic.desc = 'Cover'
+                        pic.width, pic.height, pic.depth = width, height, depth
+                        pic.data = cover_data
+                        if session['output_format'] == 'flac':
+                            from mutagen.flac import FLAC
+                            audio = FLAC(final_file)
+                            audio.clear_pictures()
+                            audio.add_picture(pic)
+                        else:
+                            from mutagen.oggopus import OggOpus
+                            audio = OggOpus(final_file)
+                            audio['metadata_block_picture'] = [base64.b64encode(pic.write()).decode('ascii')]
+                    elif session['output_format'] == 'wav':
+                        from mutagen.wave import WAVE
+                        from mutagen.id3 import APIC
+                        audio = WAVE(final_file)
+                        if audio.tags is None:
+                            audio.add_tags()
+                        audio.tags.delall('APIC')
+                        audio.tags.add(APIC(encoding=3, mime=mime, type=3, desc='Cover', data=cover_data))
+                    elif session['output_format'] == 'aac':
+                        from mutagen.id3 import ID3, APIC, ID3v1SaveOptions, ID3NoHeaderError
+                        try:
+                            tags = ID3(final_file)
+                        except ID3NoHeaderError:
+                            tags = ID3()
+                        tags.delall('APIC')
+                        tags.add(APIC(encoding=3, mime=mime, type=3, desc='Cover', data=cover_data))
+                        tags.save(final_file, v1=ID3v1SaveOptions.REMOVE, v2_version=3)
+                    if audio is not None:
+                        audio.save()
             final_vtt = os.path.join(session['audiobooks_dir'], f'{Path(final_file).stem}.vtt')
             vtt_built, error = build_vtt_file(session, vtt_path=final_vtt, block_indices=block_indices)
             if not vtt_built:
@@ -3634,6 +3702,8 @@ def convert_ebook(args:dict)->tuple:
                 args['translate_iso1'] = None
                 final_language = str(args['language'])
             session['ebook_mode'] = args['ebook_mode']
+            if session['ebook_mode'] == ebook_modes['DIRECTORY'] and isinstance(session.get('ebook_list'), list):
+                session['ebook_list'] = sorted(session['ebook_list'], key=natural_sort_key)
             if session['ebook_mode'] == ebook_modes['TEXT']:
                 if not args['ebook_textarea']:
                     error = 'Ebook textarea is empty.'
@@ -3719,7 +3789,8 @@ def convert_ebook(args:dict)->tuple:
                 session['abs_api_token'] = str(args.get('abs_api_token', ''))
                 session['abs_library'] = str(args.get('abs_library', ''))
                 os.makedirs(session['voice_dir'], exist_ok=True)
-                audio_pre_final_exist = os.path.exists(os.path.join(session['process_dir'], ebook_name + '.' + default_audio_proc_format))
+                audio_pre_final_file = os.path.join(session['process_dir'], ebook_name + '.' + default_audio_proc_format)
+                audio_pre_final_exist = os.path.exists(audio_pre_final_file)
                 audio_sentences_exist = any(Path(session['sentences_dir']).rglob(f'*.{default_audio_proc_format}'))
                 if audio_pre_final_exist or audio_sentences_exist:
                     msg = f"Warning! audio sentences or final file {ebook_name} of this conversion already exists!"
@@ -3736,7 +3807,7 @@ def convert_ebook(args:dict)->tuple:
                         print("Please enter 's', 'r' or 'd'.")
                     if choice == 'r':
                         if audio_pre_final_exist:
-                            os.unlink(audio_pre_final_exist)
+                            os.unlink(audio_pre_final_file)
                         if os.path.exists(session['final_name']):
                             os.unlink(session['final_name'])
                     elif choice == 'd':
@@ -3798,9 +3869,25 @@ def convert_ebook(args:dict)->tuple:
                             session['device'] = devices['CPU']['proc']
                             msg += f'ROCM not supported by the Torch installed!<br/>Read {default_gpu_wiki}<br/>Switching to CPU'
                     elif session['device'] == devices['XPU']['proc']:
+                        # devices['XPU']['found'] is a static capability flag: on an
+                        # image built for xpu it stays True even when no Intel GPU is
+                        # visible at runtime (Level Zero driver absent, /dev/dri not
+                        # passed to the container). Unlike CUDA that never trips the
+                        # branch below, so the failure surfaces as a crash inside
+                        # TTSManager() instead of a switch to CPU. Ask torch directly.
+                        xpu_error = None
                         if not devices['XPU']['found']:
+                            xpu_error = 'XPU not supported by the Torch installed!'
+                        else:
+                            try:
+                                import torch
+                                if not (hasattr(torch, 'xpu') and torch.xpu.is_available()):
+                                    xpu_error = 'XPU not available: no Intel GPU visible to Torch!'
+                            except Exception as e:
+                                xpu_error = f'XPU not available: runtime probe failed ({e!r})'
+                        if xpu_error is not None:
                             session['device'] = devices['CPU']['proc']
-                            msg += f"XPU not supported by the Torch installed!<br/>Read {default_gpu_wiki}<br/>Switching to CPU"
+                            msg += f'{xpu_error}<br/>Read {default_gpu_wiki}<br/>Switching to CPU'
                     if session['device'] == devices['CPU']['proc']:
                         os.environ['OMP_NUM_THREADS'] = '4'
                     vram_dict = VRAMDetector().detect_vram(session['device'], session['script_mode'])
@@ -4093,7 +4180,7 @@ def finalize_audiobook(session_id:str)->tuple:
                     error = 'ABS upload failed: Could not search libraries.'
                     print(error)
             except Exception as e:
-                error = f'ABS auto-upload error: {e}'
+                error = f'ABS upload error: {e}'
                 print(error)
         filename = os.path.basename(session['ebook'])
         count_ebook = 0

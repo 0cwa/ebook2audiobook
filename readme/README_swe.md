@@ -496,7 +496,7 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Konvertering med multiprocessing
 - [x] Batchkonvertering av en e-boksmapp
 - [x] Detektering av GPU-enhet
-- [x] Denoise något bakgrundsreferensljud för uppladdning av röstkloning,
+- [x] Denoise alla bakgrundsreferensljud för uppladdning av röstkloning
 - [x] Anpassad finjusterad modelluppladdning
 - [ ] [Skapa en iOS-app](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Skapa en Android-app](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)

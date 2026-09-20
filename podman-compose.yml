@@ -1,37 +1,69 @@
 # podman-compose.yml — universal across cpu / cuda / rocm / xpu (+ jetson),
 # on both amd64 and arm64. Pick the accelerator with --profile.
 #
-#   podman-compose                       --profile cpu    up
-#   DEVICE_TAG=cu130    podman-compose   --profile cuda   up
-#   DEVICE_TAG=jetson51 podman-compose   --profile jetson up
-#   DEVICE_TAG=rocm     podman-compose   --profile rocm   up
-#   DEVICE_TAG=xpu      podman-compose   --profile xpu    up
+# LOCAL BUILD ONLY — the app image is never pulled from a registry. Two things
+# guarantee that under podman: the `localhost/` prefix on the image name (a
+# fully-qualified local reference podman will never resolve against a registry)
+# and `pull_policy: never`. Only the FROM base
+# (docker.io/library/python:<ver>-slim-bookworm) still comes from a registry.
+#
+# On Linux/macOS the image is built by ebook2audiobook.command --script_mode
+# build_docker with DOCKER_MODE=podman, which calls plain `podman build` with
+# explicit --build-arg flags — it does NOT go through podman-compose. The
+# build: block below exists for the Windows .cmd path, which does call
+# `podman-compose --profile <p> build`, and as a manual fallback.
+#
+# The build context is the WHOLE repo, not just the Dockerfile: the Dockerfile
+# does `COPY . /app` and then runs
+#   ./ebook2audiobook.command --script_mode build_docker --docker_device "$DOCKER_DEVICE_STR"
+# so this file only works from the root of a full checkout, never from a
+# directory holding a lone downloaded Dockerfile.
+#
+# Build (once, via the launcher — it derives DOCKER_DEVICE_STR and the matching
+# base-image Python from the device probe):
+#
+#   ./ebook2audiobook.command --script_mode build_docker --docker_mode podman
+#
+# Then run:
+#
+#   DEVICE_TAG=cpu      podman-compose -f podman-compose.yml --profile cpu    up
+#   DEVICE_TAG=cu130    podman-compose -f podman-compose.yml --profile cuda   up
+#   DEVICE_TAG=jetson51 podman-compose -f podman-compose.yml --profile jetson up
+#   DEVICE_TAG=rocm     podman-compose -f podman-compose.yml --profile rocm   up
+#   DEVICE_TAG=xpu      podman-compose -f podman-compose.yml --profile xpu    up
+#
+# If your podman-compose rejects `pull_policy: never`, drop the line — the
+# localhost/ prefix already makes a registry pull impossible.
 #
 # Architecture (amd64 vs arm64) is NOT a profile. It is decided by the host you
-# run on plus the matching DEVICE_TAG image — the device entries below are
-# arch-agnostic at the compose layer.
+# build on plus the matching DEVICE_TAG — there is deliberately no `platform:`
+# key, so the build is always native (no silent qemu round trip on the Jetson).
 #
 # Always confirm a profile expands correctly before running it:
 #   DEVICE_TAG=rocm podman-compose --profile rocm config
 
 x-common: &common
   image: localhost/athomasson2/ebook2audiobook:${DEVICE_TAG:-cpu}
+  pull_policy: never
   build:
     context: .
     dockerfile: Dockerfile
     args:
-      APP_VERSION: ${APP_VERSION:-26.8.3}
+      APP_VERSION: ${APP_VERSION:-26.9.7}
       DEVICE_TAG: ${DEVICE_TAG:-cpu}
-      # PYTHON_VERSION and DOCKER_DEVICE_STR are the device-critical args: without them
-      # the Dockerfile falls back to its cu130 / python3.12 defaults. Build via
-      # ebook2audiobook.command so these are exported into the environment.
-      PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
-      DOCKER_DEVICE_STR: ${DOCKER_DEVICE_STR:-}
-      DOCKER_PROGRAMS_STR: ${DOCKER_PROGRAMS_STR:-curl ffmpeg mediainfo nodejs npm espeak-ng sox tesseract-ocr}
-      CALIBRE_INSTALLER_URL: ${CALIBRE_INSTALLER_URL:-https://download.calibre-ebook.com/linux-installer.sh}
-      ISO3_LANG: ${ISO3_LANG:-eng}
-      INSTALL_RUST: ${INSTALL_RUST:-1}
-      BUILDAH_FORMAT: docker
+      # A null value means "resolve from the environment at build time, and if
+      # unset leave the Dockerfile default alone". These are exactly the vars
+      # build_docker_image() in ebook2audiobook.command exports. Without them
+      # the Dockerfile keeps its own defaults — DOCKER_DEVICE_STR is
+      # cuda/cu130/x86_64 — so a --profile cpu build would still resolve the
+      # cuda wheel set. If your podman-compose renders these as NAME=None
+      # instead of a bare --build-arg NAME, give them explicit values here.
+      PYTHON_VERSION:
+      DOCKER_DEVICE_STR:
+      DOCKER_PROGRAMS_STR:
+      CALIBRE_INSTALLER_URL:
+      ISO3_LANG:
+      INSTALL_RUST:
   working_dir: /app
   entrypoint: ["bash", "ebook2audiobook.command", "--script_mode", "full_docker"]
   tty: true
@@ -74,8 +106,6 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
-    group_add:
-      - video
 
   # --- AMD ROCm -------------------------------------------------------------
   ebook2audiobook-rocm:
@@ -85,8 +115,8 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - video
-      - render
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-44}"
 
   # --- Intel XPU (oneAPI / IPEX) --------------------------------------------
   ebook2audiobook-xpu:
@@ -95,4 +125,4 @@ services:
     devices:
       - /dev/dri
     group_add:
-      - render
+      - "${RENDER_GID:-44}"

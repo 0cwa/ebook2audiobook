@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Konwersja wieloprocesowa
 - [x] Wsadowa konwersja folderu e-booków
 - [x] Wykrywanie urządzenia GPU
-- [x] Usuń szumy z dowolnego dźwięku źródłowego w tle w celu przesłania klonowania głosu,
-- [x] Przesyłanie niestandardowych, dostrojonych modeli
+- [x] Usuń szumy z dowolnego dźwięku referencyjnego w tle do przesyłania klonowania głosu
+- [x] Niestandardowe, dopracowane przesyłanie modelu
 - [ ] [Stworzyć aplikację na iOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Stworzyć aplikację na Androida](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 

@@ -496,7 +496,7 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] 多进程转换
 - [x] 批量电子书文件夹转换
 - [x] GPU 设备检测
-- [x] 对用于上传语音克隆的任何背景参考音频进行降噪，
+- [x] 对语音克隆上传的任何背景参考音频进行降噪
 - [x] 自定义微调模型上传
 - [ ] [制作 iOS 应用](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [制作 android 应用](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)

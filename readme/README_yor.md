@@ -496,8 +496,8 @@ git checkout tags/VERSION_NUM # Locally/Compose -> Example: git checkout tags/v2
 - [x] Ìyípadà oníṣíṣẹ́-púpọ̀
 - [x] Ìyípadà fódà eBook ìpapọ̀
 - [x] Ìdánimọ̀ Ẹ̀rọ GPU
-- [x] Yọ ohùn àtẹ̀yìnwá èyíkéyìí kúrò fún gbígbé ìfipamọ́ ohùn sókè,
-- [x] Aṣa ti o dara tuned awoṣe igbesoke
+- [x] Yọ eyikeyi ohun afetigbọ itọkasi abẹlẹ fun gbigbasilẹ ohun afetigbọ
+- [x] Awoṣe aṣa ti o dara-tuned gbe soke
 - [ ] [Ṣe ohun-èlò IOS](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 - [ ] [Ṣe ohun-èlò android](https://github.com/DrewThomasson/ebook2audiobook/pull/35#issuecomment-2496495212)
 
