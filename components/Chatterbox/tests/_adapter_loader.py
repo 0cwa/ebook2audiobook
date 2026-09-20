@@ -39,6 +39,10 @@ def load_chatterbox_adapter():
     utils_name = f"{package_name}.common.utils"
     adapter_name = f"{package_name}.chatterbox"
     module_prefix = f"{package_name}."
+    from lib.classes.tts_registry import TTSRegistry
+
+    production_registry = TTSRegistry.ENGINES
+    isolated_registry = {}
     previous_modules = {
         name: module
         for name, module in sys.modules.items()
@@ -72,8 +76,15 @@ def load_chatterbox_adapter():
         # Keep the synthetic package installed only for the adapter import.
         # The imported module is retained under the dedicated cache name, but
         # the repository namespace must be restored for later tests/imports.
+        # The adapter class registers itself during import, so isolate that
+        # side effect too; otherwise a later real import sees a duplicate.
+        TTSRegistry.ENGINES = isolated_registry
         sys.modules[package_name] = package
         sys.modules[utils_name] = utils
+        # A production import may already occupy the adapter's canonical
+        # module slot.  Remove only that slot so the isolated import executes
+        # instead of returning the cached production class.
+        sys.modules.pop(adapter_name, None)
         module = importlib.import_module(adapter_name)
 
         def load_engine_presets(engine: str):
@@ -82,9 +93,11 @@ def load_chatterbox_adapter():
             return presets
 
         module.load_engine_presets = load_engine_presets
+        module._test_registry = isolated_registry
         sys.modules[_LOADED_MODULE] = module
         return module
     finally:
+        TTSRegistry.ENGINES = production_registry
         current_names = {
             name
             for name in sys.modules
