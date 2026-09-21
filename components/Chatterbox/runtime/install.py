@@ -312,6 +312,7 @@ def _run_measurement(args, paths, interpreter: Path) -> dict:
         runtime_dir=args.runtime_dir,
         repo_root=args.repo_root,
         environment=runtime_environment,
+        manifest_path=paths.manifest_path,
     )
     session, evidence = _stage_measurement_inputs(
         paths=measurement_paths,
