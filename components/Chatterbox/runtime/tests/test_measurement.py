@@ -92,7 +92,7 @@ class MeasurementTests(unittest.TestCase):
                 canonical_model_file_paths("v3"),
             )
             self.assertEqual(
-                {record["name"] for record in session.inputs["models"]},
+                {record["name"] for record in session.revalidate_inputs()["models"]},
                 set(canonical_model_file_paths("v3")),
             )
 
