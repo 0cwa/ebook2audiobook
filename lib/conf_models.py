@@ -97,7 +97,7 @@ def chatterbox_target_status(device, *, system=None, architecture=None):
         "architecture": actual_architecture,
         "device": actual_device,
         "error": None if supported else (
-            "Chatterbox Multilingual V2 supports Linux x86_64/amd64 CPU only; "
+            "Chatterbox Multilingual V2/V3 supports Linux x86_64/amd64 CPU only; "
             f"selected target is {actual_system} {actual_architecture} {actual_device or 'unknown-device'}."
         ),
     }
@@ -325,7 +325,7 @@ default_engine_settings = {
         "files": [],
         "voice": None,
         "voices": {},
-        "notice": "Chatterbox Multilingual V2 — 23 languages — CPU-only — isolated Python 3.11 runtime — Linux x86_64/amd64. Audio includes an imperceptible Perth watermark; Chatterbox and Perth are MIT-licensed.",
+        "notice": "Chatterbox Multilingual V2/V3 — 23 languages — CPU-only — isolated Python 3.11 runtime — Linux x86_64/amd64. V2 remains the default. Audio includes an imperceptible Perth watermark; Chatterbox and Perth are MIT-licensed.",
         "rating": {"VRAM": 0, "CPU": 4, "RAM": 8, "Realism": 5}
     }
 }
