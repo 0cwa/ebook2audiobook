@@ -73,6 +73,18 @@ def _change_device_tts_controls(
     return (engine_update, *dependent_updates)
 
 
+def _select_fine_tuned_preset(current:str|None, options:list[str])->str:
+    """Select a valid preset while preserving the global internal default when possible."""
+
+    if current in options:
+        return current
+    if default_fine_tuned in options:
+        return default_fine_tuned
+    if options:
+        return options[0]
+    return default_fine_tuned
+
+
 def _set_session_tts_engine(session:dict, engine:str|None, *, force:bool=False)->bool:
     previous_engine = session.get('tts_engine')
     if previous_engine == engine and not force:
@@ -2036,15 +2048,10 @@ def build_interface(args:dict)->gr.Blocks:
                             for name, details in models.items()
                             if details.get("lang") in ("multi", session['language'])
                         ]
-                        if session['fine_tuned'] in fine_tuned_options:
-                            fine_tuned = session['fine_tuned']
-                        elif default_fine_tuned in fine_tuned_options:
-                            fine_tuned = default_fine_tuned
-                        elif fine_tuned_options:
-                            fine_tuned = fine_tuned_options[0]
-                        else:
-                            fine_tuned = default_fine_tuned
-                        session['fine_tuned'] = fine_tuned
+                        session['fine_tuned'] = _select_fine_tuned_preset(
+                            session.get('fine_tuned'),
+                            fine_tuned_options,
+                        )
                         return gr.update(choices=fine_tuned_options, value=session['fine_tuned'])
                 except Exception as e:
                     error = f'_update_gr_fine_tuned_list(): {e}!'
