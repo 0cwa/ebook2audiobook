@@ -247,16 +247,18 @@ def _load_local_chatterbox_model(snapshot_path: Path, variant: str) -> tuple[Any
 
     mtl_module.drop_invalid_tokens = _capture_filtered_tokens
 
-    original_apply_watermark = model.watermarker.apply_watermark
+    class _V3TrimmedWatermarker:
+        def __init__(self, inner: Any):
+            self.inner = inner
 
-    def _trim_then_watermark(wav: Any, sample_rate: int) -> Any:
-        count = token_state.get("count")
-        if count:
-            speech_samples = max(1, count - 1) * (sample_rate // S3_TOKEN_RATE)
-            wav = wav[:speech_samples]
-        return original_apply_watermark(wav, sample_rate=sample_rate)
+        def apply_watermark(self, wav: Any, sample_rate: int) -> Any:
+            count = token_state.get("count")
+            if count:
+                speech_samples = max(1, count - 1) * (sample_rate // S3_TOKEN_RATE)
+                wav = wav[:speech_samples]
+            return self.inner.apply_watermark(wav, sample_rate=sample_rate)
 
-    model.watermarker.apply_watermark = _trim_then_watermark
+    model.watermarker = _V3TrimmedWatermarker(model.watermarker)
     return model, True
 
 
