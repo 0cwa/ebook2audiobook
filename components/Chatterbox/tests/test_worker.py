@@ -472,6 +472,137 @@ class WorkerValidationTests(unittest.TestCase):
                 [(str(snapshot.resolve()), "cpu", "v3")],
             )
 
+    def test_v3_loader_compatibility_path_matches_pinned_runtime_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory)
+
+            class _Loadable:
+                def load_state_dict(self, _state):
+                    return None
+
+                def to(self, _device):
+                    return self
+
+                def eval(self):
+                    return self
+
+            class FakeVoiceEncoder(_Loadable):
+                pass
+
+            class FakeT3(_Loadable):
+                def __init__(self, _config):
+                    pass
+
+            class FakeS3Gen(_Loadable):
+                pass
+
+            class FakeT3Config:
+                @staticmethod
+                def multilingual():
+                    return object()
+
+            class FakeTokenizer:
+                def __init__(self, path):
+                    self.path = path
+
+            class FakeConditionals:
+                pass
+
+            class FakeWatermarker:
+                def __init__(self):
+                    self.calls = []
+
+                def apply_watermark(self, wav, sample_rate):
+                    self.calls.append((len(wav), sample_rate))
+                    return wav
+
+            class FakeMultilingual:
+                @classmethod
+                def from_local(cls, checkpoint_dir, device):
+                    raise AssertionError("pinned V3 runtime must use the compatibility loader")
+
+                def __init__(self, t3, s3gen, ve, tokenizer, device, conds=None):
+                    self.t3 = t3
+                    self.s3gen = s3gen
+                    self.ve = ve
+                    self.tokenizer = tokenizer
+                    self.device = device
+                    self.conds = conds
+                    self.watermarker = FakeWatermarker()
+
+            chatterbox_package = types.ModuleType("chatterbox")
+            chatterbox_package.__path__ = []
+            models_package = types.ModuleType("chatterbox.models")
+            models_package.__path__ = []
+            t3_package = types.ModuleType("chatterbox.models.t3")
+            t3_package.__path__ = []
+            t3_package.T3 = FakeT3
+            t3_module = types.ModuleType("chatterbox.models.t3.t3")
+            modules_package = types.ModuleType("chatterbox.models.t3.modules")
+            modules_package.__path__ = []
+            t3_config_module = types.ModuleType("chatterbox.models.t3.modules.t3_config")
+            t3_config_module.T3Config = FakeT3Config
+            s3gen_module = types.ModuleType("chatterbox.models.s3gen")
+            s3gen_module.S3Gen = FakeS3Gen
+            s3tokenizer_module = types.ModuleType("chatterbox.models.s3tokenizer")
+            s3tokenizer_module.S3_TOKEN_RATE = 5
+            tokenizers_module = types.ModuleType("chatterbox.models.tokenizers")
+            tokenizers_module.MTLTokenizer = FakeTokenizer
+            voice_encoder_module = types.ModuleType("chatterbox.models.voice_encoder")
+            voice_encoder_module.VoiceEncoder = FakeVoiceEncoder
+
+            mtl_module = types.ModuleType("chatterbox.mtl_tts")
+            mtl_module.ChatterboxMultilingualTTS = FakeMultilingual
+            mtl_module.Conditionals = FakeConditionals
+            mtl_module.drop_invalid_tokens = lambda tokens: tokens
+
+            torch_module = types.ModuleType("torch")
+            torch_module.device = lambda value: value
+            torch_module.load = lambda *_args, **_kwargs: {}
+
+            safetensors_package = types.ModuleType("safetensors")
+            safetensors_package.__path__ = []
+            safetensors_torch_module = types.ModuleType("safetensors.torch")
+            safetensors_torch_module.load_file = lambda _path: {}
+
+            module_map = {
+                "chatterbox": chatterbox_package,
+                "chatterbox.mtl_tts": mtl_module,
+                "chatterbox.models": models_package,
+                "chatterbox.models.t3": t3_package,
+                "chatterbox.models.t3.t3": t3_module,
+                "chatterbox.models.t3.modules": modules_package,
+                "chatterbox.models.t3.modules.t3_config": t3_config_module,
+                "chatterbox.models.s3gen": s3gen_module,
+                "chatterbox.models.s3tokenizer": s3tokenizer_module,
+                "chatterbox.models.tokenizers": tokenizers_module,
+                "chatterbox.models.voice_encoder": voice_encoder_module,
+                "torch": torch_module,
+                "safetensors": safetensors_package,
+                "safetensors.torch": safetensors_torch_module,
+            }
+
+            with patch.dict(sys.modules, module_map):
+                model, compatibility_mode = worker._load_local_chatterbox_model(
+                    snapshot,
+                    "v3",
+                )
+
+                class FakeTokens:
+                    shape = (1, 4)
+
+                filtered = mtl_module.drop_invalid_tokens(FakeTokens())
+                self.assertEqual(filtered.shape, (1, 4))
+                watermarked = model.watermarker.apply_watermark(
+                    list(range(100)),
+                    sample_rate=20,
+                )
+
+            self.assertTrue(compatibility_mode)
+            self.assertEqual(len(watermarked), 12)
+            self.assertEqual(model.watermarker.calls, [(12, 20)])
+            self.assertTrue(hasattr(t3_module, "AlignmentStreamAnalyzer"))
+
     def test_default_loader_rejects_missing_pinned_tokenizer_data(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict("os.environ", {"PKUSEG_HOME": str(Path(directory) / "missing")}, clear=False):
