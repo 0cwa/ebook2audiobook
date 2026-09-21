@@ -1662,7 +1662,7 @@ def run_disposable_measurement(
         str(record["name"]): Path(str(record["path"]))
         for record in session_inputs["models"]
     }
-    if set(model_sources) != set(CANONICAL_MODEL_FILE_PATHS):
+    if set(model_sources) != set(session.expected_model_file_paths):
         raise MeasurementConfigurationError("disposable model inputs are incomplete")
     worker_data_sources = {
         str(record["name"]): Path(str(record["path"]))
