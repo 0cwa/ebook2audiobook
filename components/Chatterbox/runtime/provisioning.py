@@ -31,9 +31,11 @@ from typing import Any, Callable, Mapping, Sequence
 from .contract_data import (
     ACTIVATION_RECEIPT_SCHEMA,
     CANONICAL_MODEL_FILE_PATHS,
+    canonical_model_file_paths,
     MANIFEST_VERSION,
     MODEL_ACQUISITION_STORAGE_PHASES,
     MODEL_RECEIPT_SCHEMA,
+    normalize_model_variant,
     RUNTIME_CONTRACT_VERSION,
     RUNTIME_INSTALL_STORAGE_PHASES,
     RUNTIME_RECEIPT_SCHEMA,
@@ -361,7 +363,8 @@ def build_identity_contract(manifest: Mapping[str, Any], lock_sha256: str | None
     runtime_digest = _canonical_digest(runtime_payload)
     model_digest = _canonical_digest(model_payload)
     runtime_fingerprint = f"py311-linux-x86_64-cpu-{runtime_digest[:16]}"
-    model_fingerprint = f"chatterbox-mtl-v2-{model_digest[:16]}"
+    model_variant = normalize_model_variant(model.get("variant")) or "unknown"
+    model_fingerprint = f"chatterbox-mtl-{model_variant}-{model_digest[:16]}"
     activation_payload = {
         "schema": ACTIVATION_IDENTITY_SCHEMA,
         "runtime_fingerprint": runtime_fingerprint,
@@ -369,7 +372,7 @@ def build_identity_contract(manifest: Mapping[str, Any], lock_sha256: str | None
         "product_profile": product.get("profile"),
         "worker_protocol": product.get("worker_protocol"),
     }
-    activation_fingerprint = f"chatterbox-v2-cpu-{_canonical_digest(activation_payload)[:16]}"
+    activation_fingerprint = f"chatterbox-{model_variant}-cpu-{_canonical_digest(activation_payload)[:16]}"
     return {
         "runtime": {"fingerprint": runtime_fingerprint, "payload": runtime_payload},
         "model": {"fingerprint": model_fingerprint, "payload": model_payload},
@@ -735,7 +738,13 @@ def _identity_errors(manifest: Mapping[str, Any]) -> list[str]:
         if name in {"chatterbox_source", "perth"} and source.get("association_to_artifact") != "unverified":
             errors.append(f"{name}.association_to_artifact must be unverified")
         if name == "model" and isinstance(source.get("files"), list):
-            if len(source["files"]) != len(CANONICAL_MODEL_FILE_PATHS):
+            model_variant = normalize_model_variant(source.get("variant"))
+            if model_variant is None:
+                errors.append("model.variant must identify a supported multilingual variant")
+                canonical_paths: tuple[str, ...] = ()
+            else:
+                canonical_paths = canonical_model_file_paths(model_variant)
+            if canonical_paths and len(source["files"]) != len(canonical_paths):
                 errors.append("model.files must contain exactly six canonical entries")
             model_paths: list[str] = []
             for item in source["files"]:
@@ -752,8 +761,10 @@ def _identity_errors(manifest: Mapping[str, Any]) -> list[str]:
                 model_paths.append(relative.as_posix())
             if len(model_paths) != len(set(model_paths)):
                 errors.append("model.files paths must be unique")
-            if set(model_paths) != set(CANONICAL_MODEL_FILE_PATHS):
-                errors.append("model.files paths must match the canonical V2 allowlist")
+            if canonical_paths and set(model_paths) != set(canonical_paths):
+                errors.append(
+                    f"model.files paths must match the canonical {model_variant.upper()} allowlist"
+                )
     return errors
 
 
@@ -1275,8 +1286,12 @@ def _cleanup_owned_model_candidate(paths: RuntimePaths, candidate: Path, nonce: 
 
 def _model_file_records(manifest: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
     model = manifest.get("sources", {}).get("model", {})
+    variant = normalize_model_variant(model.get("variant")) if isinstance(model, Mapping) else None
+    if variant is None:
+        raise RuntimeConfigurationError("manifest sources.model.variant is unsupported")
+    canonical_paths = canonical_model_file_paths(variant)
     files = model.get("files") if isinstance(model, Mapping) else None
-    if not isinstance(files, list) or len(files) != len(CANONICAL_MODEL_FILE_PATHS):
+    if not isinstance(files, list) or len(files) != len(canonical_paths):
         raise RuntimeConfigurationError("manifest sources.model.files must contain exactly six canonical entries")
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1303,8 +1318,10 @@ def _model_file_records(manifest: Mapping[str, Any]) -> tuple[dict[str, Any], ..
         if not isinstance(digest, str) or not _HEX64.fullmatch(digest):
             raise RuntimeConfigurationError(f"manifest model file SHA-256 is invalid: {path}")
         records.append({"path": path, "size_bytes": size, "sha256": digest.lower()})
-    if set(seen) != set(CANONICAL_MODEL_FILE_PATHS):
-        raise RuntimeConfigurationError("manifest model file paths must match the canonical V2 allowlist")
+    if set(seen) != set(canonical_paths):
+        raise RuntimeConfigurationError(
+            f"manifest model file paths must match the canonical {variant.upper()} allowlist"
+        )
     return tuple(records)
 
 
@@ -3233,7 +3250,7 @@ def acquire_model(
     activation_receipt_writer: Callable[[RuntimePaths, Mapping[str, Any]], Path] = write_activation_receipt,
     nonce_factory: Callable[[], str] = lambda: secrets.token_hex(16),
 ) -> dict[str, Any]:
-    """Acquire, verify, and activate the immutable V2 snapshot explicitly."""
+    """Acquire, verify, and activate the selected immutable multilingual snapshot."""
 
     measurement_mode = measurement_root is not None
     if measurement_mode:
