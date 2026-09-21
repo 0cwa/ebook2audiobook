@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from components.Chatterbox.runtime.contract_data import canonical_model_file_paths
 from components.Chatterbox.runtime.measurement import (
     CANONICAL_MODEL_FILE_PATHS,
     DISPOSABLE_MARKER,
@@ -66,6 +67,34 @@ class MeasurementTests(unittest.TestCase):
         }
         values.update(overrides)
         return MeasurementSession(**values)
+
+    def test_v3_session_uses_v3_canonical_model_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths, wheelhouse, lock, packages, _models = self._surface(root)
+            v3_models = [
+                _verified(name, paths["model"] / name, f"model:{name}".encode())
+                for name in canonical_model_file_paths("v3")
+            ]
+            session = MeasurementSession(
+                disposable_root=root,
+                paths=paths,
+                wheelhouse=wheelhouse,
+                lock_input=lock,
+                package_inputs=packages,
+                expected_package_count=1,
+                model_inputs=v3_models,
+                model_variant="v3",
+            )
+            self.assertEqual(session.model_variant, "v3")
+            self.assertEqual(
+                session.expected_model_file_paths,
+                canonical_model_file_paths("v3"),
+            )
+            self.assertEqual(
+                {record["name"] for record in session.inputs["models"]},
+                set(canonical_model_file_paths("v3")),
+            )
 
     def test_disposable_root_and_every_path_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
