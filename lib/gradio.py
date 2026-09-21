@@ -2038,6 +2038,10 @@ def build_interface(args:dict)->gr.Blocks:
                         ]
                         if session['fine_tuned'] in fine_tuned_options:
                             fine_tuned = session['fine_tuned']
+                        elif default_fine_tuned in fine_tuned_options:
+                            fine_tuned = default_fine_tuned
+                        elif fine_tuned_options:
+                            fine_tuned = fine_tuned_options[0]
                         else:
                             fine_tuned = default_fine_tuned
                         session['fine_tuned'] = fine_tuned
