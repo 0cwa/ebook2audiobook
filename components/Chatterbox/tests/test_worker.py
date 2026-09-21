@@ -141,13 +141,16 @@ class WorkerValidationTests(unittest.TestCase):
         revision: str,
         digest: str,
         size: int,
-        file_paths: tuple[str, ...] = CANONICAL_MODEL_FILE_PATHS,
+        file_paths: tuple[str, ...] | None = None,
+        variant: str = "v2",
     ) -> None:
+        if file_paths is None:
+            file_paths = contract_data.canonical_model_file_paths(variant)
         path.write_text(json.dumps({
             "sources": {
                 "model": {
                     "locator": "https://huggingface.co/ResembleAI/chatterbox",
-                    "variant": "multilingual-v2",
+                    "variant": f"multilingual-{variant}",
                     "revision": revision,
                     "files": [
                         {"path": file_path, "size_bytes": size, "sha256": digest}
@@ -177,6 +180,53 @@ class WorkerValidationTests(unittest.TestCase):
             self.assertEqual(normalized["output"], root / "sentence.flac")
             self.assertEqual(normalized["segments"][0]["voice_prompt"]["path"], str(voice))
         self.assertNotIn("chatterbox", __import__("sys").modules)
+
+    def test_v3_request_matches_only_a_v3_worker_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = {
+                "protocol": 1,
+                "id": "request-v3",
+                "op": "synthesize",
+                "model": {
+                    "family": "chatterbox-multilingual",
+                    "revision": "d" * 40,
+                    "t3_model": "v3",
+                },
+                "device": "cpu",
+                "language": "en",
+                "approved_roots": {"voice": [str(root)], "output": [str(root)]},
+                "segments": [{"kind": "text", "text": "Hello from V3"}],
+                "output": {"path": str(root / "sentence.flac"), "sample_rate": 24000, "channels": 1},
+            }
+            normalized = worker.validate_request(
+                request,
+                expected_model={"revision": "d" * 40, "variant": "v3"},
+            )
+            self.assertEqual(normalized["model"]["t3_model"], "v3")
+            with self.assertRaisesRegex(worker.WorkerRequestError, "variant does not match"):
+                worker.validate_request(
+                    request,
+                    expected_model={"revision": "d" * 40, "variant": "v2"},
+                )
+
+    def test_v3_manifest_uses_variant_specific_six_file_allowlist(self):
+        records = [
+            {"path": path, "size_bytes": 1, "sha256": "0" * 64}
+            for path in contract_data.canonical_model_file_paths("v3")
+        ]
+        self.assertEqual(
+            tuple(record["path"] for record in worker._manifest_file_records(records, "v3")),
+            contract_data.canonical_model_file_paths("v3"),
+        )
+        with self.assertRaisesRegex(RuntimeError, "canonical V3 allowlist"):
+            worker._manifest_file_records(
+                [
+                    {"path": path, "size_bytes": 1, "sha256": "0" * 64}
+                    for path in CANONICAL_MODEL_FILE_PATHS
+                ],
+                "v3",
+            )
 
     def test_paths_outside_approved_roots_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -349,6 +399,78 @@ class WorkerValidationTests(unittest.TestCase):
             self.assertEqual(instance.supported_languages, worker.SUPPORTED_LANGUAGES)
             self.assertEqual(offline_value, "1")
             self.assertFalse(token_present)
+
+    def test_v3_loader_uses_upstream_selector_when_runtime_exposes_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = root / "verified-model"
+            revision = "e" * 40
+            snapshot.mkdir(parents=True)
+            content = b"verified-v3"
+            v3_paths = contract_data.canonical_model_file_paths("v3")
+            for relative_path in v3_paths:
+                (snapshot / relative_path).write_bytes(content)
+            digest = hashlib.sha256(content).hexdigest()
+            manifest = root / "runtime-manifest-v3.json"
+            self.write_manifest(
+                manifest,
+                revision=revision,
+                digest=digest,
+                size=len(content),
+                variant="v3",
+            )
+            pkuseg_home = root / "pkuseg"
+            pkuseg_model = pkuseg_home / "spacy_ontonotes"
+            pkuseg_model.mkdir(parents=True)
+            (pkuseg_model / "features.msgpack").write_bytes(b"features")
+            (pkuseg_model / "weights.npz").write_bytes(b"weights")
+            pkuseg_archive = pkuseg_home / worker.PKUSEG_DATA_FILENAME
+            with zipfile.ZipFile(pkuseg_archive, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("features.msgpack", b"features")
+                archive.writestr("weights.npz", b"weights")
+            pkuseg_digest = hashlib.sha256(pkuseg_archive.read_bytes()).hexdigest()
+
+            from_local_calls = []
+
+            class FakeModel:
+                sr = 24000
+
+            class FakeMultilingual:
+                @classmethod
+                def get_supported_languages(cls):
+                    return {language: language for language in worker.SUPPORTED_LANGUAGES}
+
+                @classmethod
+                def from_local(cls, checkpoint_dir, *, device, t3_model=None):
+                    from_local_calls.append((checkpoint_dir, device, t3_model))
+                    return FakeModel()
+
+            chatterbox_package = types.ModuleType("chatterbox")
+            chatterbox_package.__path__ = []
+            chatterbox_module = types.ModuleType("chatterbox.mtl_tts")
+            chatterbox_module.ChatterboxMultilingualTTS = FakeMultilingual
+
+            with (
+                patch.dict(sys.modules, {
+                    "chatterbox": chatterbox_package,
+                    "chatterbox.mtl_tts": chatterbox_module,
+                }),
+                patch.object(worker, "PKUSEG_DATA_SHA256", pkuseg_digest),
+                patch.dict("os.environ", {"PKUSEG_HOME": str(pkuseg_home)}, clear=False),
+            ):
+                instance = worker.ChatterboxWorker(
+                    model_manifest_path=manifest,
+                    approved_model_root=snapshot,
+                    approved_manifest_root=root,
+                )
+                instance.load_model()
+
+            self.assertEqual(instance.model_variant, "v3")
+            self.assertFalse(instance._v3_compat_mode)
+            self.assertEqual(
+                from_local_calls,
+                [(str(snapshot.resolve()), "cpu", "v3")],
+            )
 
     def test_default_loader_rejects_missing_pinned_tokenizer_data(self):
         with tempfile.TemporaryDirectory() as directory:
