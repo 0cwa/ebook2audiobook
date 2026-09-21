@@ -174,8 +174,10 @@ def _load_local_chatterbox_model(snapshot_path: Path, variant: str) -> tuple[Any
     from safetensors.torch import load_file as load_safetensors
 
     import chatterbox.models.t3.t3 as t3_module
+    import chatterbox.mtl_tts as mtl_module
     from chatterbox.mtl_tts import Conditionals
     from chatterbox.models.s3gen import S3Gen
+    from chatterbox.models.s3tokenizer import S3_TOKEN_RATE
     from chatterbox.models.t3 import T3
     from chatterbox.models.t3.modules.t3_config import T3Config
     from chatterbox.models.tokenizers import MTLTokenizer
@@ -223,17 +225,39 @@ def _load_local_chatterbox_model(snapshot_path: Path, variant: str) -> tuple[Any
             builtin_voice, map_location=map_location
         ).to(DEVICE)
 
-    return (
-        ChatterboxMultilingualTTS(
-            t3,
-            s3gen,
-            voice_encoder,
-            tokenizer,
-            DEVICE,
-            conds=conditionals,
-        ),
-        True,
+    model = ChatterboxMultilingualTTS(
+        t3,
+        s3gen,
+        voice_encoder,
+        tokenizer,
+        DEVICE,
+        conds=conditionals,
     )
+
+    # Upstream V3 drops the final post-filter speech token before watermarking.
+    # Capture the filtered token count without copying the whole generate()
+    # implementation so the pinned 0.1.7 runtime keeps its own synthesis path.
+    token_state: dict[str, int | None] = {"count": None}
+    original_drop_invalid_tokens = mtl_module.drop_invalid_tokens
+
+    def _capture_filtered_tokens(tokens: Any) -> Any:
+        filtered = original_drop_invalid_tokens(tokens)
+        token_state["count"] = int(filtered.shape[-1])
+        return filtered
+
+    mtl_module.drop_invalid_tokens = _capture_filtered_tokens
+
+    original_apply_watermark = model.watermarker.apply_watermark
+
+    def _trim_then_watermark(wav: Any, sample_rate: int) -> Any:
+        count = token_state.get("count")
+        if count:
+            speech_samples = max(1, count - 1) * (sample_rate // S3_TOKEN_RATE)
+            wav = wav[:speech_samples]
+        return original_apply_watermark(wav, sample_rate=sample_rate)
+
+    model.watermarker.apply_watermark = _trim_then_watermark
+    return model, True
 
 
 def _message(message: Mapping[str, Any]) -> None:
@@ -856,14 +880,6 @@ class ChatterboxWorker:
                 waveform = waveform.unsqueeze(0)
             if waveform.ndim != 2 or int(waveform.shape[0]) != CHANNELS or int(waveform.shape[1]) <= 0:
                 raise RuntimeError("Chatterbox returned invalid mono audio")
-            if self._v3_compat_mode:
-                # Upstream V3 drops the final speech token (~40 ms) before
-                # watermarking.  The pinned 0.1.7 fallback cannot do that
-                # internally, so trim the same token duration at the worker
-                # boundary after generation.
-                token_samples = SAMPLE_RATE // 25
-                if int(waveform.shape[1]) > token_samples:
-                    waveform = waveform[:, :-token_samples]
             chunks.append(waveform)
 
         if not chunks:
