@@ -632,6 +632,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotEqual(model_identities["model"]["fingerprint"], baseline["model"]["fingerprint"])
         self.assertNotEqual(model_identities["activation"]["fingerprint"], baseline["activation"]["fingerprint"])
 
+        v3 = _copy(manifest)
+        v3["product"]["profile"] = "chatterbox-multilingual-v3-cpu"
+        v3["sources"]["model"]["variant"] = "multilingual-v3"
+        for record in v3["sources"]["model"]["files"]:
+            if record["path"] == "t3_mtl23ls_v2.safetensors":
+                record["path"] = "t3_mtl23ls_v3.safetensors"
+                break
+        v3_identities = build_identity_contract(v3, "a" * 64)
+        self.assertEqual(v3_identities["runtime"]["fingerprint"], baseline["runtime"]["fingerprint"])
+        self.assertNotEqual(v3_identities["model"]["fingerprint"], baseline["model"]["fingerprint"])
+        self.assertNotEqual(v3_identities["activation"]["fingerprint"], baseline["activation"]["fingerprint"])
+        self.assertTrue(v3_identities["model"]["fingerprint"].startswith("chatterbox-mtl-v3-"))
+        self.assertTrue(v3_identities["activation"]["fingerprint"].startswith("chatterbox-v3-cpu-"))
+
     def test_receipt_identity_links_cross_validate_without_claiming_readiness(self) -> None:
         identities = build_identity_contract(_manifest("a" * 64), "a" * 64)
         contracts = receipt_identity_contracts(identities)
