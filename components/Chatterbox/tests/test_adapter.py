@@ -104,7 +104,7 @@ class ChatterboxAdapterTests(unittest.TestCase):
             "translate_enabled": False,
             "translate": None,
             "fine_tuned": model,
-            "model_cache": None,
+            "model_cache": "chatterbox-internal" if model == "internal" else f"chatterbox-{model}",
             "voice": voice,
             "voice_dir": str(voice_dir),
             "process_dir": str(process_dir),
