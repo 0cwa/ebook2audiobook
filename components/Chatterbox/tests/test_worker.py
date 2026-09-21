@@ -600,7 +600,7 @@ class WorkerValidationTests(unittest.TestCase):
 
             self.assertTrue(compatibility_mode)
             self.assertEqual(len(watermarked), 12)
-            self.assertEqual(model.watermarker.calls, [(12, 20)])
+            self.assertEqual(model.watermarker.inner.calls, [(12, 20)])
             self.assertTrue(hasattr(t3_module, "AlignmentStreamAnalyzer"))
 
     def test_default_loader_rejects_missing_pinned_tokenizer_data(self):
