@@ -262,6 +262,7 @@ def _stage_measurement_inputs(
         package_inputs=package_inputs,
         expected_package_count=CURRENT_LOCK_REQUIREMENT_COUNT,
         model_inputs=model_inputs,
+        model_variant=str(manifest.get("sources", {}).get("model", {}).get("variant", "v2")),
         worker_data_inputs=worker_data_inputs,
     )
     sizes = {item.sha256: item.size_bytes for item in package_inputs}
