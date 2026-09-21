@@ -7,6 +7,7 @@ _settings = default_engine_settings[TTS_ENGINES["CHATTERBOX"]]
 
 _base = {
     "repo": _settings["repo"],
+    "lang": "multi",
     "samplerate": _settings["samplerate"],
     "files": [],
     "voice": _settings["voice"],
