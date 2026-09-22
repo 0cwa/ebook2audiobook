@@ -12,14 +12,42 @@ from dataclasses import dataclass
 from typing import Final
 
 
-_CANONICAL_MODEL_FILE_PATHS = (
+_COMMON_MODEL_FILE_PATHS = (
     "ve.pt",
-    "t3_mtl23ls_v2.safetensors",
     "s3gen.pt",
     "grapheme_mtl_merged_expanded_v1.json",
     "conds.pt",
     "Cangjie5_TC.json",
 )
+_MODEL_FILE_PATHS = {
+    "v2": ("ve.pt", "t3_mtl23ls_v2.safetensors", *_COMMON_MODEL_FILE_PATHS[1:]),
+    "v3": ("ve.pt", "t3_mtl23ls_v3.safetensors", *_COMMON_MODEL_FILE_PATHS[1:]),
+}
+_MODEL_VARIANT_ALIASES = {
+    "v2": "v2",
+    "multilingual-v2": "v2",
+    "v3": "v3",
+    "multilingual-v3": "v3",
+}
+_SUPPORTED_MODEL_VARIANTS = ("v2", "v3")
+_CANONICAL_MODEL_FILE_PATHS = _MODEL_FILE_PATHS["v2"]
+
+
+def normalize_model_variant(value: object) -> str | None:
+    """Return the stable worker variant name for a manifest/request value."""
+
+    if not isinstance(value, str):
+        return None
+    return _MODEL_VARIANT_ALIASES.get(value.strip().lower())
+
+
+def canonical_model_file_paths(variant: object) -> tuple[str, ...]:
+    """Return the exact six-file allowlist for one supported model variant."""
+
+    normalized = normalize_model_variant(variant)
+    if normalized is None:
+        raise ValueError(f"unsupported Chatterbox model variant: {variant!r}")
+    return _MODEL_FILE_PATHS[normalized]
 _SUPPORTED_LANGUAGES = (
     "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
     "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
@@ -130,6 +158,7 @@ CHANNELS: Final = CONTRACT_DATA.channels
 DEVICE: Final = CONTRACT_DATA.device
 MODEL_FAMILY: Final = CONTRACT_DATA.model_family
 MODEL_VARIANT: Final = CONTRACT_DATA.model_variant
+SUPPORTED_MODEL_VARIANTS: Final = _SUPPORTED_MODEL_VARIANTS
 SUPPORTED_LANGUAGES: Final = CONTRACT_DATA.supported_languages
 APPROVED_LANGUAGE_IDS: Final = CONTRACT_DATA.approved_language_ids
 MAX_SEGMENTS: Final = CONTRACT_DATA.max_segments
@@ -143,6 +172,7 @@ __all__ = [
     "APPROVED_LANGUAGE_IDS",
     "CANONICAL_MODEL_FILE_PATHS",
     "CHANNELS",
+    "canonical_model_file_paths",
     "CONTRACT_DATA",
     "ContractData",
     "DEVICE",
@@ -155,6 +185,8 @@ __all__ = [
     "MODEL_FAMILY",
     "MODEL_RECEIPT_SCHEMA",
     "MODEL_VARIANT",
+    "SUPPORTED_MODEL_VARIANTS",
+    "normalize_model_variant",
     "PKUSEG_DATA_FILENAME",
     "PKUSEG_DATA_SHA256",
     "PKUSEG_DATA_URL",

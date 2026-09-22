@@ -85,7 +85,14 @@ class ChatterboxAdapterTests(unittest.TestCase):
         self.addCleanup(runtime.stop)
 
     @staticmethod
-    def session(root: Path, language: str = "eng", *, voice: str | None = None, device: str = "cpu"):
+    def session(
+        root: Path,
+        language: str = "eng",
+        *,
+        voice: str | None = None,
+        device: str = "cpu",
+        model: str = "internal",
+    ):
         voice_dir = root / "voices"
         process_dir = root / "process"
         (process_dir / "chapters" / "sentences").mkdir(parents=True, exist_ok=True)
@@ -96,8 +103,8 @@ class ChatterboxAdapterTests(unittest.TestCase):
             "language_iso1": "en" if language == "eng" else "sv",
             "translate_enabled": False,
             "translate": None,
-            "fine_tuned": "internal",
-            "model_cache": "chatterbox-internal",
+            "fine_tuned": model,
+            "model_cache": "chatterbox-internal" if model == "internal" else f"chatterbox-{model}",
             "voice": voice,
             "voice_dir": str(voice_dir),
             "process_dir": str(process_dir),
@@ -377,6 +384,23 @@ assert loaded._test_registry["chatterbox"] is loaded.Chatterbox
             self.assertIsNone(error)
             self.assertTrue(output.is_file())
             self.assertEqual(FakeClient.instances[0].requests[0]["segments"][0]["text"], "Hello world.")
+
+    def test_v3_selection_is_forwarded_to_client_and_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = chatterbox_module.Chatterbox(self.session(root, model="v3"))
+            output = root / "process" / "chapters" / "sentences" / "0.flac"
+            with (
+                patch.object(chatterbox_module, "ChatterboxClient", FakeClient),
+                patch.object(chatterbox_module, "_audio_file_is_valid", return_value=(True, None)),
+            ):
+                success, error = engine.convert(str(output), "Hello from V3.")
+            self.assertTrue(success)
+            self.assertIsNone(error)
+            client = FakeClient.instances[0]
+            self.assertEqual(engine.model_variant, "v3")
+            self.assertEqual(client.kwargs["model"]["t3_model"], "v3")
+            self.assertEqual(client.requests[0]["model"]["t3_model"], "v3")
 
     def test_client_uses_pinned_runtime_manifest_and_model_paths(self):
         with tempfile.TemporaryDirectory() as directory:

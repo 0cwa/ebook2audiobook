@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+try:
+    from .contract_data import canonical_model_file_paths, normalize_model_variant
+except ImportError:  # Direct execution support for the runtime CLI.
+    from contract_data import canonical_model_file_paths, normalize_model_variant  # type: ignore[no-redef]
+
 
 MEASUREMENT_SCHEMA = "ebook2audiobook.chatterbox-capacity-observations.v1"
 DISPOSABLE_MARKER = ".chatterbox-measurement-root"
@@ -305,6 +310,7 @@ class MeasurementSession:
         package_inputs: Sequence[VerifiedInput],
         expected_package_count: int,
         model_inputs: Sequence[VerifiedInput],
+        model_variant: str = "v2",
         worker_data_inputs: Sequence[VerifiedInput] = (),
         fault_plan: Mapping[tuple[str, int, str], str] | None = None,
     ) -> None:
@@ -320,6 +326,13 @@ class MeasurementSession:
         self._lock_input = lock_input
         self._package_inputs = tuple(package_inputs)
         self._model_inputs = tuple(model_inputs)
+        normalized_variant = normalize_model_variant(model_variant)
+        if normalized_variant is None:
+            raise MeasurementConfigurationError(
+                f"unsupported Chatterbox model variant for measurement: {model_variant!r}"
+            )
+        self.model_variant = normalized_variant
+        self.expected_model_file_paths = canonical_model_file_paths(normalized_variant)
         self._worker_data_inputs = tuple(worker_data_inputs)
         self.expected_package_count = expected_package_count
         lock_records = _verify_inputs([lock_input], root=self.root, parent=self.paths["cache"], label="lock")
@@ -333,7 +346,7 @@ class MeasurementSession:
             root=self.root,
             parent=self.paths["model"],
             label="model",
-            expected_names=CANONICAL_MODEL_FILE_PATHS,
+            expected_names=self.expected_model_file_paths,
         )
         worker_data_records: list[dict[str, Any]] = []
         if self._worker_data_inputs:
@@ -379,7 +392,7 @@ class MeasurementSession:
             root=self.root,
             parent=self.paths["model"],
             label="model",
-            expected_names=CANONICAL_MODEL_FILE_PATHS,
+            expected_names=self.expected_model_file_paths,
         )
         worker_data_records: list[dict[str, Any]] = []
         if self._worker_data_inputs:

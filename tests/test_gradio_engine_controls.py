@@ -76,6 +76,21 @@ class GradioEngineControlTests(unittest.TestCase):
             "ENGINE_B": {"voice": "default-b"},
         }
 
+    def test_preset_fallback_uses_first_available_model_when_internal_is_absent(self):
+        with patch.object(gradio, "default_fine_tuned", "internal"):
+            self.assertEqual(
+                gradio._select_fine_tuned_preset("internal", ["v2", "v3"]),
+                "v2",
+            )
+            self.assertEqual(
+                gradio._select_fine_tuned_preset("v3", ["v2", "v3"]),
+                "v3",
+            )
+            self.assertEqual(
+                gradio._select_fine_tuned_preset("custom", ["internal", "v3"]),
+                "internal",
+            )
+
     def test_translation_same_engine_forces_default_state_reset(self):
         session = {
             "tts_engine": "ENGINE_A",

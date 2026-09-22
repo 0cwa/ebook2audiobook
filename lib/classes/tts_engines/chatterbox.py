@@ -31,7 +31,7 @@ SAMPLE_RATE = 24000
 CHANNELS = 1
 DEVICE = devices["CPU"]["proc"]
 MODEL_FAMILY = "chatterbox-multilingual"
-MODEL_VARIANT = "v2"
+DEFAULT_MODEL_VARIANT = "v2"
 DEFAULT_BREAK_SECONDS = 0.4
 DEFAULT_PAUSE_SECONDS = 0.8
 MAX_SILENCE_SECONDS = 30.0
@@ -47,6 +47,20 @@ class _RuntimeDetails:
     model_root: Path
     manifest_root: Path
     model_revision: str
+
+
+def _selected_model_variant(session: Any) -> str:
+    requested = session.get("fine_tuned") if hasattr(session, "get") else None
+    if requested in (None, "", "internal", "v2"):
+        return "v2"
+    if requested == "v3":
+        return "v3"
+    return DEFAULT_MODEL_VARIANT
+
+
+def _manifest_path(repo_root: Path, variant: str) -> Path:
+    filename = "runtime-manifest-v3.json" if variant == "v3" else "runtime-manifest.json"
+    return repo_root / "components" / "Chatterbox" / "runtime" / filename
 
 
 def chatterbox_host_status(session: Any, *, repo_root: Path | None = None) -> Mapping[str, Any]:
@@ -74,8 +88,11 @@ def chatterbox_host_status(session: Any, *, repo_root: Path | None = None) -> Ma
 
     from components.Chatterbox.runtime.runtime import host_runtime_status
 
+    root = repo_root or Path(__file__).resolve().parents[3]
+    variant = _selected_model_variant(session)
     return host_runtime_status(
-        repo_root=repo_root or Path(__file__).resolve().parents[3],
+        repo_root=root,
+        manifest_path=_manifest_path(root, variant),
     )
 
 
@@ -120,10 +137,10 @@ def _status_path(status: Mapping[str, Any], field: str) -> Path:
     return Path(value).expanduser().resolve(strict=False)
 
 
-def _runtime_details() -> _RuntimeDetails:
+def _runtime_details(variant: str = DEFAULT_MODEL_VARIANT) -> _RuntimeDetails:
     """Resolve worker inputs from the stable host status contract."""
 
-    status = chatterbox_host_status({"device": DEVICE})
+    status = chatterbox_host_status({"device": DEVICE, "fine_tuned": variant})
     if not status.get("ok"):
         raise ValueError(status.get("error") or "Chatterbox is not ready")
 
@@ -209,11 +226,22 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
     def __init__(self, session: Any):
         self.session = session
         self.tts_engine = TTS_ENGINES["CHATTERBOX"]
-        readiness = chatterbox_host_status(session)
+        self.models = load_engine_presets(self.tts_engine)
+        requested_model = self.session.get("fine_tuned") or "v2"
+        if requested_model == "internal":
+            requested_model = "v2"
+        if requested_model not in self.models:
+            raise ValueError(f"Invalid Chatterbox model {requested_model!r}")
+        self.fine_tuned = requested_model
+        self.model_variant = str(self.models[requested_model].get("variant", requested_model))
+        readiness = chatterbox_host_status(
+            {**dict(session), "fine_tuned": self.model_variant}
+            if isinstance(session, Mapping)
+            else session
+        )
         if not readiness.get("ok"):
             raise ValueError(readiness.get("error") or "Chatterbox is not ready")
-        self.models = load_engine_presets(self.tts_engine)
-        self.tts_key = self.session.get("model_cache") or "chatterbox-internal"
+        self.tts_key = self.session.get("model_cache") or f"chatterbox-{self.model_variant}"
         self.tts_zs_key = None
         self.device = self.session.get("device", DEVICE)
         if self.device != DEVICE:
@@ -229,9 +257,6 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
         if self.language_id is None:
             raise ValueError(f"Language {language!r} is not supported by Chatterbox first slice")
 
-        self.fine_tuned = self.session.get("fine_tuned") or "internal"
-        if self.fine_tuned not in self.models:
-            raise ValueError(f"Invalid Chatterbox model {self.fine_tuned!r}")
         self.params = {"samplerate": SAMPLE_RATE, "current_voice": None}
         self._client: ChatterboxClient | None = None
         self._client_output_roots: tuple[Path, ...] = ()
@@ -281,7 +306,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
 
     def _runtime_contract(self) -> _RuntimeDetails:
         if self._runtime is None:
-            self._runtime = _runtime_details()
+            self._runtime = _runtime_details(self.model_variant)
         return self._runtime
 
     @staticmethod
@@ -355,7 +380,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             "model": {
                 "family": MODEL_FAMILY,
                 "revision": runtime.model_revision,
-                "t3_model": MODEL_VARIANT,
+                "t3_model": self.model_variant,
             },
             "language": self.language_id,
             "segments": segments,
@@ -394,7 +419,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             model={
                 "family": MODEL_FAMILY,
                 "revision": runtime.model_revision,
-                "t3_model": MODEL_VARIANT,
+                "t3_model": self.model_variant,
             },
             extra_env=runtime.environment,
             model_manifest_path=runtime.manifest_path,

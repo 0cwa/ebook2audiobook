@@ -31,6 +31,7 @@ from components.Chatterbox.runtime.contract_data import (
     APPROVED_LANGUAGE_IDS,
     CANONICAL_MODEL_FILE_PATHS,
     CHANNELS,
+    canonical_model_file_paths,
     DEVICE,
     MAX_SEGMENTS,
     MAX_SILENCE_SECONDS,
@@ -39,6 +40,7 @@ from components.Chatterbox.runtime.contract_data import (
     MODEL_FAMILY,
     MODEL_RECEIPT_SCHEMA,
     MODEL_VARIANT,
+    normalize_model_variant,
     PKUSEG_DATA_FILENAME,
     PKUSEG_DATA_SHA256,
     PROTOCOL_VERSION,
@@ -139,6 +141,125 @@ def _runtime_language_ids(capabilities: Any) -> tuple[str, ...]:
             f"set (missing: {missing}; additional: {additional})"
         )
     return tuple(language for language in SUPPORTED_LANGUAGES if language in runtime_ids)
+
+
+def _load_local_chatterbox_model(snapshot_path: Path, variant: str) -> tuple[Any, bool]:
+    """Load one verified multilingual model.
+
+    Chatterbox 0.1.7 predates the public V3 selector.  Prefer the upstream
+    selector when present; otherwise reproduce the minimal V3 loading path
+    against the pinned 0.1.7 runtime and disable its V2-only alignment
+    analyzer.  The fallback remains local-only and uses the same verified
+    snapshot boundary as V2.
+    """
+
+    import inspect
+
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+
+    from_local = ChatterboxMultilingualTTS.from_local
+    if variant == "v2":
+        return from_local(str(snapshot_path), device=DEVICE), False
+    if variant != "v3":
+        raise RuntimeError(f"unsupported Chatterbox model variant: {variant}")
+
+    try:
+        parameters = inspect.signature(from_local).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "t3_model" in parameters:
+        return from_local(str(snapshot_path), device=DEVICE, t3_model="v3"), False
+
+    import torch
+    from safetensors.torch import load_file as load_safetensors
+
+    import chatterbox.models.t3.t3 as t3_module
+    import chatterbox.mtl_tts as mtl_module
+    from chatterbox.mtl_tts import Conditionals
+    from chatterbox.models.s3gen import S3Gen
+    from chatterbox.models.s3tokenizer import S3_TOKEN_RATE
+    from chatterbox.models.t3 import T3
+    from chatterbox.models.t3.modules.t3_config import T3Config
+    from chatterbox.models.tokenizers import MTLTokenizer
+    from chatterbox.models.voice_encoder import VoiceEncoder
+
+    class _DisabledAlignmentStreamAnalyzer:
+        """Compatibility shim for upstream V3's analyzer-free inference path."""
+
+        def __init__(self, *_args: Any, eos_idx: int = 0, **_kwargs: Any):
+            self.eos_idx = eos_idx
+
+        def step(self, logits: Any, next_token: Any = None) -> Any:
+            return logits
+
+    # The pinned 0.1.7 T3.inference resolves this module global each time it
+    # compiles its backend.  A V3 worker hosts one model for its lifetime, so
+    # replacing the analyzer here cannot affect a co-resident V2 model.
+    t3_module.AlignmentStreamAnalyzer = _DisabledAlignmentStreamAnalyzer
+
+    map_location = torch.device("cpu") if DEVICE in {"cpu", "mps"} else None
+    voice_encoder = VoiceEncoder()
+    voice_encoder.load_state_dict(
+        torch.load(snapshot_path / "ve.pt", map_location=map_location, weights_only=True)
+    )
+    voice_encoder.to(DEVICE).eval()
+
+    t3 = T3(T3Config.multilingual())
+    t3_state = load_safetensors(snapshot_path / "t3_mtl23ls_v3.safetensors")
+    if "model" in t3_state.keys():
+        t3_state = t3_state["model"][0]
+    t3.load_state_dict(t3_state)
+    t3.to(DEVICE).eval()
+
+    s3gen = S3Gen()
+    s3gen.load_state_dict(
+        torch.load(snapshot_path / "s3gen.pt", map_location=map_location, weights_only=True)
+    )
+    s3gen.to(DEVICE).eval()
+
+    tokenizer = MTLTokenizer(str(snapshot_path / "grapheme_mtl_merged_expanded_v1.json"))
+    conditionals = None
+    builtin_voice = snapshot_path / "conds.pt"
+    if builtin_voice.exists():
+        conditionals = Conditionals.load(
+            builtin_voice, map_location=map_location
+        ).to(DEVICE)
+
+    model = ChatterboxMultilingualTTS(
+        t3,
+        s3gen,
+        voice_encoder,
+        tokenizer,
+        DEVICE,
+        conds=conditionals,
+    )
+
+    # Upstream V3 drops the final post-filter speech token before watermarking.
+    # Capture the filtered token count without copying the whole generate()
+    # implementation so the pinned 0.1.7 runtime keeps its own synthesis path.
+    token_state: dict[str, int | None] = {"count": None}
+    original_drop_invalid_tokens = mtl_module.drop_invalid_tokens
+
+    def _capture_filtered_tokens(tokens: Any) -> Any:
+        filtered = original_drop_invalid_tokens(tokens)
+        token_state["count"] = int(filtered.shape[-1])
+        return filtered
+
+    mtl_module.drop_invalid_tokens = _capture_filtered_tokens
+
+    class _V3TrimmedWatermarker:
+        def __init__(self, inner: Any):
+            self.inner = inner
+
+        def apply_watermark(self, wav: Any, sample_rate: int) -> Any:
+            count = token_state.get("count")
+            if count:
+                speech_samples = max(1, count - 1) * (sample_rate // S3_TOKEN_RATE)
+                wav = wav[:speech_samples]
+            return self.inner.apply_watermark(wav, sample_rate=sample_rate)
+
+    model.watermarker = _V3TrimmedWatermarker(model.watermarker)
+    return model, True
 
 
 def _message(message: Mapping[str, Any]) -> None:
@@ -266,9 +387,9 @@ def _repository_id(value: Any) -> str:
     return locator
 
 
-def _manifest_file_records(value: Any) -> tuple[dict[str, Any], ...]:
+def _manifest_file_records(value: Any, variant: str = MODEL_VARIANT) -> tuple[dict[str, Any], ...]:
     # The allowlist remains enforced here, independently of runtime checks.
-    canonical_paths = set(CANONICAL_MODEL_FILE_PATHS)
+    canonical_paths = set(canonical_model_file_paths(variant))
     if not isinstance(value, list) or len(value) != len(canonical_paths):
         raise RuntimeError("runtime manifest model.files must contain exactly six canonical entries")
     records = []
@@ -297,7 +418,7 @@ def _manifest_file_records(value: Any) -> tuple[dict[str, Any], ...]:
             raise RuntimeError(f"size_bytes for {path} must be a non-negative integer")
         records.append({"path": path, "sha256": digest, "size_bytes": size})
     if seen != canonical_paths:
-        raise RuntimeError("runtime manifest model file paths must match the canonical V2 allowlist")
+        raise RuntimeError(f"runtime manifest model file paths must match the canonical {variant.upper()} allowlist")
     return tuple(records)
 
 
@@ -499,13 +620,17 @@ def validate_request(
         raise WorkerRequestError("invalid_request", "model must be an object")
     if model.get("family") != MODEL_FAMILY:
         raise WorkerRequestError("invalid_request", "unsupported Chatterbox model family")
-    if model.get("t3_model") != MODEL_VARIANT:
-        raise WorkerRequestError("invalid_request", "Chatterbox multilingual V2 is required")
+    variant = normalize_model_variant(model.get("t3_model"))
+    if variant is None:
+        raise WorkerRequestError("invalid_request", "unsupported Chatterbox multilingual model variant")
     revision = _safe_string(model.get("revision"), "model revision", max_length=512)
     if expected_model is not None:
         expected_revision = expected_model.get("revision")
         if expected_revision and revision != expected_revision:
             raise WorkerRequestError("invalid_request", "model revision does not match the worker")
+        expected_variant = normalize_model_variant(expected_model.get("variant"))
+        if expected_variant and variant != expected_variant:
+            raise WorkerRequestError("invalid_request", "model variant does not match the worker")
 
     language = _safe_string(request.get("language"), "language", max_length=16).lower()
     if language not in supported_languages:
@@ -632,6 +757,8 @@ class ChatterboxWorker:
         self.model_loader = model_loader
         self.require_activation_receipt = require_activation_receipt
         self.model = None
+        self.model_variant = MODEL_VARIANT
+        self._v3_compat_mode = False
         self.supported_languages = SUPPORTED_LANGUAGES
         self.sample_rate = SAMPLE_RATE
         self._audio_backend = None
@@ -675,6 +802,7 @@ class ChatterboxWorker:
                     (manifest_root,),
                 )
                 self.model_revision = manifest["revision"]
+                self.model_variant = manifest["variant"]
                 try:
                     snapshot_path = _verify_model_snapshot(model_root, manifest["files"], model_root)
                 except Exception as exc:
@@ -695,9 +823,9 @@ class ChatterboxWorker:
                 runtime_languages = _runtime_language_ids(get_supported_languages())
                 try:
                     with redirect_stdout(sys.stderr):
-                        self.model = ChatterboxMultilingualTTS.from_local(
-                            str(snapshot_path),
-                            device=DEVICE,
+                        self.model, self._v3_compat_mode = _load_local_chatterbox_model(
+                            snapshot_path,
+                            self.model_variant,
                         )
                 except Exception as exc:
                     raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
@@ -735,6 +863,10 @@ class ChatterboxWorker:
                 chunks.append(torch.zeros((CHANNELS, samples), dtype=torch.float32))
                 continue
             kwargs = {"language_id": request["language"]}
+            if self._v3_compat_mode:
+                # Match the upstream V3 default introduced with the opt-in
+                # checkpoint rather than 0.1.7's V2-era default of 2.0.
+                kwargs["repetition_penalty"] = 1.2
             prompt = segment.get("voice_prompt")
             if prompt is not None:
                 kwargs["audio_prompt_path"] = prompt["path"]
@@ -784,7 +916,10 @@ class ChatterboxWorker:
             normalized = validate_request(
                 request,
                 configured_roots=self.approved_roots,
-                expected_model={"revision": self.model_revision} if self.model_revision else None,
+                expected_model={
+                    "revision": self.model_revision,
+                    "variant": self.model_variant,
+                } if self.model_revision else None,
                 supported_languages=self.supported_languages,
             )
             result = self._generate_file(normalized, cancel)

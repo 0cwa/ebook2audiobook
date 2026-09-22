@@ -87,6 +87,12 @@ def _parser() -> argparse.ArgumentParser:
         sub = subparsers.add_parser(command)
         sub.add_argument("--python", dest="python_path", help="explicit Python 3.11 interpreter")
         sub.add_argument("--runtime-dir", type=Path, default=_runtime_dir())
+        sub.add_argument(
+            "--model",
+            choices=("v2", "v3"),
+            default="v2",
+            help="multilingual checkpoint profile (default: v2)",
+        )
         sub.add_argument("--repo-root", type=Path)
         sub.add_argument("--worker", type=Path, help="worker script for the mandatory self-test (defaults to the repository worker)")
         if command == "measure":
@@ -105,6 +111,11 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--network-isolation-capability")
             sub.add_argument("--sample-interval", type=float, default=0.05)
     return parser
+
+
+def _manifest_path(runtime_dir: Path, model: str) -> Path:
+    filename = "runtime-manifest.json" if model == "v2" else "runtime-manifest-v3.json"
+    return (runtime_dir / filename).resolve()
 
 
 def _interpreter(value: str | None) -> Path:
@@ -198,10 +209,11 @@ def _stage_measurement_inputs(
     if not isinstance(model_records, list):
         raise ProvisioningError("manifest model file records are missing")
     model_by_name = {str(item.get("path")): item for item in model_records if isinstance(item, dict)}
-    if set(model_by_name) != set(CANONICAL_MODEL_FILE_PATHS):
-        raise ProvisioningError("manifest model files do not match the canonical six-file set")
+    model_paths = tuple(model_by_name)
+    if len(model_paths) != 6:
+        raise ProvisioningError("manifest model files do not contain the canonical six-file set")
     model_inputs: list[VerifiedInput] = []
-    for relative in CANONICAL_MODEL_FILE_PATHS:
+    for relative in model_paths:
         record = model_by_name[relative]
         source_entry = model_source / relative
         if source_entry.is_symlink():
@@ -250,6 +262,7 @@ def _stage_measurement_inputs(
         package_inputs=package_inputs,
         expected_package_count=CURRENT_LOCK_REQUIREMENT_COUNT,
         model_inputs=model_inputs,
+        model_variant=str(manifest.get("sources", {}).get("model", {}).get("variant", "v2")),
         worker_data_inputs=worker_data_inputs,
     )
     sizes = {item.sha256: item.size_bytes for item in package_inputs}
@@ -300,6 +313,7 @@ def _run_measurement(args, paths, interpreter: Path) -> dict:
         runtime_dir=args.runtime_dir,
         repo_root=args.repo_root,
         environment=runtime_environment,
+        manifest_path=paths.manifest_path,
     )
     session, evidence = _stage_measurement_inputs(
         paths=measurement_paths,
@@ -347,7 +361,11 @@ def _run_measurement(args, paths, interpreter: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        paths = build_paths(runtime_dir=args.runtime_dir, repo_root=args.repo_root)
+        paths = build_paths(
+            runtime_dir=args.runtime_dir,
+            repo_root=args.repo_root,
+            manifest_path=_manifest_path(args.runtime_dir, args.model),
+        )
         if args.command == "verify-lock":
             manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
             result = verify_lock(paths.lock_path, manifest)
