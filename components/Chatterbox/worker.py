@@ -29,9 +29,7 @@ if str(_REPOSITORY_ROOT) not in sys.path:
 from components.Chatterbox.runtime.contract_data import (
     ACTIVATION_RECEIPT_SCHEMA,
     APPROVED_LANGUAGE_IDS,
-    CANONICAL_MODEL_FILE_PATHS,
     CHANNELS,
-    canonical_model_file_paths,
     DEVICE,
     MAX_SEGMENTS,
     MAX_SILENCE_SECONDS,
@@ -40,6 +38,8 @@ from components.Chatterbox.runtime.contract_data import (
     MODEL_FAMILY,
     MODEL_RECEIPT_SCHEMA,
     MODEL_VARIANT,
+    model_profile_spec,
+    normalize_model_profile,
     normalize_model_variant,
     PKUSEG_DATA_FILENAME,
     PKUSEG_DATA_SHA256,
@@ -387,11 +387,9 @@ def _repository_id(value: Any) -> str:
     return locator
 
 
-def _manifest_file_records(value: Any, variant: str = MODEL_VARIANT) -> tuple[dict[str, Any], ...]:
-    # The allowlist remains enforced here, independently of runtime checks.
-    canonical_paths = set(canonical_model_file_paths(variant))
-    if not isinstance(value, list) or len(value) != len(canonical_paths):
-        raise RuntimeError("runtime manifest model.files must contain exactly six canonical entries")
+def _manifest_file_records(value: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list) or not value:
+        raise RuntimeError("runtime manifest model.files must contain declared artifacts")
     records = []
     seen: set[str] = set()
     for item in value:
@@ -416,9 +414,10 @@ def _manifest_file_records(value: Any, variant: str = MODEL_VARIANT) -> tuple[di
         size = item.get("size_bytes")
         if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
             raise RuntimeError(f"size_bytes for {path} must be a non-negative integer")
-        records.append({"path": path, "sha256": digest, "size_bytes": size})
-    if seen != canonical_paths:
-        raise RuntimeError(f"runtime manifest model file paths must match the canonical {variant.upper()} allowlist")
+        source = item.get("source")
+        if source is not None and (not isinstance(source, str) or not source):
+            raise RuntimeError(f"source for {path} must be a non-empty repository identifier")
+        records.append({"path": path, "source": source, "sha256": digest, "size_bytes": size})
     return tuple(records)
 
 
@@ -434,12 +433,31 @@ def _read_model_manifest(manifest_path: Path, manifest_roots: Sequence[Path]) ->
     model = sources.get("model") if isinstance(sources, Mapping) else None
     if not isinstance(model, Mapping):
         raise RuntimeError("model manifest sources.model is required")
-    revision = _immutable_revision(model.get("revision"))
+    profile = normalize_model_profile(model.get("profile", model.get("variant")))
+    if profile is None:
+        raise RuntimeError("model manifest profile is unsupported")
+    spec = model_profile_spec(profile)
+    loader_kind = model.get("loader_kind", spec.loader_kind)
+    family = model.get("family", spec.family)
+    if loader_kind != spec.loader_kind or family != spec.family:
+        raise RuntimeError("model manifest profile semantics do not match the selected profile")
+    revision_value = model.get("revision")
+    locator_value = model.get("locator")
+    repositories = model.get("repositories")
+    if (revision_value is None or locator_value is None) and isinstance(repositories, Mapping) and len(repositories) == 1:
+        repository = next(iter(repositories.values()))
+        if isinstance(repository, Mapping):
+            revision_value = repository.get("revision")
+            locator_value = repository.get("locator")
+    revision = _immutable_revision(revision_value)
     records = _manifest_file_records(model.get("files"))
     return {
-        "repository": _repository_id(model.get("locator")),
+        "repository": _repository_id(locator_value),
         "revision": revision,
-        "variant": model.get("variant"),
+        "profile": profile,
+        "variant": profile,
+        "loader_kind": loader_kind,
+        "family": family,
         "files": records,
         "allow_patterns": [record["path"] for record in records],
     }
@@ -802,7 +820,12 @@ class ChatterboxWorker:
                     (manifest_root,),
                 )
                 self.model_revision = manifest["revision"]
-                self.model_variant = manifest["variant"]
+                self.model_profile = manifest["profile"]
+                self.model_variant = manifest["profile"]
+                if manifest["loader_kind"] != "multilingual":
+                    raise RuntimeError(
+                        f"unsupported Chatterbox loader kind in this worker: {manifest['loader_kind']}"
+                    )
                 try:
                     snapshot_path = _verify_model_snapshot(model_root, manifest["files"], model_root)
                 except Exception as exc:
