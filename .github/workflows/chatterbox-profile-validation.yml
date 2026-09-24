@@ -1,0 +1,38 @@
+name: Temporary Chatterbox Profile Validation
+
+on:
+  push:
+    branches:
+      - chatterbox-profile-contract
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Byte compile changed Python
+        run: |
+          python -m py_compile             components/Chatterbox/runtime/contract_data.py             components/Chatterbox/runtime/provisioning.py             components/Chatterbox/runtime/measurement.py             components/Chatterbox/runtime/measurement_harness.py             components/Chatterbox/runtime/install.py             components/Chatterbox/worker.py             components/Chatterbox/runtime/tests/test_runtime.py             components/Chatterbox/runtime/tests/test_measurement.py             components/Chatterbox/tests/test_worker.py
+      - name: Focused Chatterbox tests
+        run: python -m unittest discover -s components/Chatterbox -p 'test_*.py' -v
+      - name: Validate checked-in manifests
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from components.Chatterbox.runtime.runtime import validate_manifest_identity, build_identity_contract
+
+          runtime = Path("components/Chatterbox/runtime")
+          identities = []
+          for name in ("runtime-manifest.json", "runtime-manifest-v3.json"):
+              manifest = json.loads((runtime / name).read_text())
+              result = validate_manifest_identity(manifest)
+              assert result["ok"], (name, result["errors"])
+              identities.append(build_identity_contract(manifest, manifest["lock"]["sha256"]))
+          assert identities[0]["runtime"]["fingerprint"] == identities[1]["runtime"]["fingerprint"]
+          assert identities[0]["model"]["fingerprint"] != identities[1]["model"]["fingerprint"]
+          assert identities[0]["activation"]["fingerprint"] != identities[1]["activation"]["fingerprint"]
+          PY
