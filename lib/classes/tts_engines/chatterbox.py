@@ -49,17 +49,22 @@ class _RuntimeDetails:
     model_revision: str
 
 
-def _selected_model_variant(session: Any) -> str:
+def _selected_model_profile(session: Any) -> str:
     requested = session.get("fine_tuned") if hasattr(session, "get") else None
-    if requested in (None, "", "internal", "v2"):
-        return "v2"
-    if requested == "v3":
-        return "v3"
+    if requested in (None, "", "internal"):
+        return DEFAULT_MODEL_VARIANT
+    if requested in {"v2", "v3", "turbo", "nano"}:
+        return str(requested)
     return DEFAULT_MODEL_VARIANT
 
 
-def _manifest_path(repo_root: Path, variant: str) -> Path:
-    filename = "runtime-manifest-v3.json" if variant == "v3" else "runtime-manifest.json"
+# Compatibility alias while the surrounding application still uses "variant"
+# terminology in a few places.
+_selected_model_variant = _selected_model_profile
+
+
+def _manifest_path(repo_root: Path, profile: str) -> Path:
+    filename = "runtime-manifest.json" if profile == "v2" else f"runtime-manifest-{profile}.json"
     return repo_root / "components" / "Chatterbox" / "runtime" / filename
 
 
@@ -89,10 +94,10 @@ def chatterbox_host_status(session: Any, *, repo_root: Path | None = None) -> Ma
     from components.Chatterbox.runtime.runtime import host_runtime_status
 
     root = repo_root or Path(__file__).resolve().parents[3]
-    variant = _selected_model_variant(session)
+    profile = _selected_model_profile(session)
     return host_runtime_status(
         repo_root=root,
-        manifest_path=_manifest_path(root, variant),
+        manifest_path=_manifest_path(root, profile),
     )
 
 
@@ -233,7 +238,18 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
         if requested_model not in self.models:
             raise ValueError(f"Invalid Chatterbox model {requested_model!r}")
         self.fine_tuned = requested_model
-        self.model_variant = str(self.models[requested_model].get("variant", requested_model))
+        model_preset = self.models[requested_model]
+        self.model_profile = str(model_preset.get("profile", model_preset.get("variant", requested_model)))
+        self.model_variant = self.model_profile
+        self.loader_kind = str(model_preset.get("loader_kind", "multilingual"))
+        self.model_family = str(model_preset.get("family", "chatterbox-multilingual"))
+        self.supported_language_ids = tuple(
+            str(value) for value in model_preset.get("supported_language_ids", ())
+        )
+        minimum_prompt = model_preset.get("minimum_prompt_seconds")
+        self.minimum_prompt_seconds = (
+            float(minimum_prompt) if minimum_prompt is not None else None
+        )
         readiness = chatterbox_host_status(
             {**dict(session), "fine_tuned": self.model_variant}
             if isinstance(session, Mapping)
@@ -256,6 +272,10 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
         self.language_id = chatterbox_language_id(language)
         if self.language_id is None:
             raise ValueError(f"Language {language!r} is not supported by Chatterbox first slice")
+        if self.supported_language_ids and self.language_id not in self.supported_language_ids:
+            raise ValueError(
+                f"Chatterbox profile {self.model_profile!r} does not support language {self.language_id!r}"
+            )
 
         self.params = {"samplerate": SAMPLE_RATE, "current_voice": None}
         self._client: ChatterboxClient | None = None
@@ -293,6 +313,13 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             with wave.open(str(path), "rb") as stream:
                 if stream.getnchannels() != CHANNELS or stream.getframerate() != SAMPLE_RATE or stream.getnframes() <= 0:
                     return None, "Chatterbox voice prompt must be nonempty mono 24 kHz WAV audio"
+                if self.minimum_prompt_seconds is not None:
+                    duration = stream.getnframes() / float(stream.getframerate())
+                    if duration <= self.minimum_prompt_seconds:
+                        return None, (
+                            f"Chatterbox {self.model_profile} voice prompt must be longer than "
+                            f"{self.minimum_prompt_seconds:g} seconds"
+                        )
         except (EOFError, OSError, wave.Error) as exc:
             return None, f"Chatterbox voice prompt could not be decoded: {exc}"
         self.params["current_voice"] = str(path)
@@ -306,8 +333,19 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
 
     def _runtime_contract(self) -> _RuntimeDetails:
         if self._runtime is None:
-            self._runtime = _runtime_details(self.model_variant)
+            self._runtime = _runtime_details(self.model_profile)
         return self._runtime
+
+    def _model_identity(self, runtime: _RuntimeDetails) -> dict[str, str]:
+        identity = {
+            "profile": self.model_profile,
+            "loader_kind": self.loader_kind,
+            "family": self.model_family,
+            "revision": runtime.model_revision,
+        }
+        if self.loader_kind == "multilingual":
+            identity["t3_model"] = self.model_profile
+        return identity
 
     @staticmethod
     def _tag_value(part: str) -> tuple[str, bool, str | None] | None:
@@ -377,11 +415,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             raise ValueError("Chatterbox sentence contains no speakable text or pause")
         runtime = self._runtime_contract()
         return {
-            "model": {
-                "family": MODEL_FAMILY,
-                "revision": runtime.model_revision,
-                "t3_model": self.model_variant,
-            },
+            "model": self._model_identity(runtime),
             "language": self.language_id,
             "segments": segments,
             "output": {
@@ -416,11 +450,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             interpreter=runtime.interpreter,
             worker_path=worker_path,
             approved_roots={"voice": self.voice_roots, "output": roots},
-            model={
-                "family": MODEL_FAMILY,
-                "revision": runtime.model_revision,
-                "t3_model": self.model_variant,
-            },
+            model=self._model_identity(runtime),
             extra_env=runtime.environment,
             model_manifest_path=runtime.manifest_path,
             approved_model_root=runtime.model_root,
