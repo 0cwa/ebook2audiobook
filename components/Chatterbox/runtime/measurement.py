@@ -18,12 +18,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-try:
-    from .contract_data import canonical_model_file_paths, normalize_model_variant
-except ImportError:  # Direct execution support for the runtime CLI.
-    from contract_data import canonical_model_file_paths, normalize_model_variant  # type: ignore[no-redef]
-
-
 MEASUREMENT_SCHEMA = "ebook2audiobook.chatterbox-capacity-observations.v1"
 DISPOSABLE_MARKER = ".chatterbox-measurement-root"
 DISPOSABLE_MARKER_CONTENT = "observation-only-v1\n"
@@ -35,14 +29,6 @@ REQUIRED_PATH_NAMES = (
     "run",
     "temporary",
     "activation",
-)
-CANONICAL_MODEL_FILE_PATHS = (
-    "ve.pt",
-    "t3_mtl23ls_v2.safetensors",
-    "s3gen.pt",
-    "grapheme_mtl_merged_expanded_v1.json",
-    "conds.pt",
-    "Cangjie5_TC.json",
 )
 PHASE_EVENTS = frozenset(
     {
@@ -171,7 +157,7 @@ def _verify_inputs(
     if not inputs:
         raise MeasurementConfigurationError(f"{label} inputs must not be empty")
     if expected_names is not None and {item.name for item in inputs} != set(expected_names):
-        raise MeasurementConfigurationError(f"{label} inputs do not match the canonical file set")
+        raise MeasurementConfigurationError(f"{label} inputs do not match the declared file set")
     if len({item.name for item in inputs}) != len(inputs):
         raise MeasurementConfigurationError(f"{label} input names must be unique")
     records: list[dict[str, Any]] = []
@@ -310,7 +296,8 @@ class MeasurementSession:
         package_inputs: Sequence[VerifiedInput],
         expected_package_count: int,
         model_inputs: Sequence[VerifiedInput],
-        model_variant: str = "v2",
+        model_profile: str = "v2",
+        model_file_paths: Sequence[str] | None = None,
         worker_data_inputs: Sequence[VerifiedInput] = (),
         fault_plan: Mapping[tuple[str, int, str], str] | None = None,
     ) -> None:
@@ -326,13 +313,14 @@ class MeasurementSession:
         self._lock_input = lock_input
         self._package_inputs = tuple(package_inputs)
         self._model_inputs = tuple(model_inputs)
-        normalized_variant = normalize_model_variant(model_variant)
-        if normalized_variant is None:
-            raise MeasurementConfigurationError(
-                f"unsupported Chatterbox model variant for measurement: {model_variant!r}"
-            )
-        self.model_variant = normalized_variant
-        self.expected_model_file_paths = canonical_model_file_paths(normalized_variant)
+        if not isinstance(model_profile, str) or not model_profile:
+            raise MeasurementConfigurationError("model profile for measurement is required")
+        self.model_profile = model_profile
+        self.model_variant = model_profile
+        declared_paths = tuple(model_file_paths or (item.name for item in self._model_inputs))
+        if not declared_paths or len(set(declared_paths)) != len(declared_paths):
+            raise MeasurementConfigurationError("model file paths for measurement are invalid")
+        self.expected_model_file_paths = declared_paths
         self._worker_data_inputs = tuple(worker_data_inputs)
         self.expected_package_count = expected_package_count
         lock_records = _verify_inputs([lock_input], root=self.root, parent=self.paths["cache"], label="lock")
