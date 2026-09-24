@@ -69,34 +69,49 @@
         {
           "path": "ve.pt",
           "size_bytes": 5698626,
-          "sha256": "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1"
+          "sha256": "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1",
+          "source": "model"
         },
         {
           "path": "t3_mtl23ls_v3.safetensors",
           "size_bytes": 2143989928,
-          "sha256": "5abca8321ede76f8e61f1cc0d19aea6c946b28871017ce8726f8a69203f05953"
+          "sha256": "5abca8321ede76f8e61f1cc0d19aea6c946b28871017ce8726f8a69203f05953",
+          "source": "model"
         },
         {
           "path": "s3gen.pt",
           "size_bytes": 1057165844,
-          "sha256": "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3"
+          "sha256": "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3",
+          "source": "model"
         },
         {
           "path": "grapheme_mtl_merged_expanded_v1.json",
           "size_bytes": 69989,
-          "sha256": "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf"
+          "sha256": "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf",
+          "source": "model"
         },
         {
           "path": "conds.pt",
           "size_bytes": 107374,
-          "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e"
+          "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e",
+          "source": "model"
         },
         {
           "path": "Cangjie5_TC.json",
           "size_bytes": 1920163,
-          "sha256": "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c"
+          "sha256": "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c",
+          "source": "model"
         }
-      ]
+      ],
+      "profile": "v3",
+      "loader_kind": "multilingual",
+      "family": "chatterbox-multilingual",
+      "repositories": {
+        "model": {
+          "locator": "https://huggingface.co/ResembleAI/chatterbox",
+          "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+        }
+      }
     },
     "v3_compatibility_source": {
       "locator": "https://github.com/resemble-ai/chatterbox",
