@@ -152,6 +152,10 @@ def _runtime_details(variant: str = DEFAULT_MODEL_VARIANT) -> _RuntimeDetails:
     model_profile = status.get("model_profile")
     if not isinstance(model_profile, str) or not model_profile:
         raise ValueError("Chatterbox runtime status is missing model_profile")
+    if model_profile != variant:
+        raise ValueError(
+            f"Chatterbox runtime profile {model_profile!r} does not match requested profile {variant!r}"
+        )
     model_fingerprint = status.get("model_fingerprint")
     if not isinstance(model_fingerprint, str) or not model_fingerprint:
         raise ValueError("Chatterbox runtime status is missing model_fingerprint")
