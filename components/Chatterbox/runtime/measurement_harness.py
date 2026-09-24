@@ -25,7 +25,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .measurement import (
-    CANONICAL_MODEL_FILE_PATHS,
     DISPOSABLE_MARKER,
     DISPOSABLE_MARKER_CONTENT,
     MeasurementConfigurationError,
