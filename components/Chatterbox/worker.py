@@ -441,25 +441,55 @@ def _read_model_manifest(manifest_path: Path, manifest_roots: Sequence[Path]) ->
     family = model.get("family", spec.family)
     if loader_kind != spec.loader_kind or family != spec.family:
         raise RuntimeError("model manifest profile semantics do not match the selected profile")
-    revision_value = model.get("revision")
-    locator_value = model.get("locator")
-    repositories = model.get("repositories")
-    if (revision_value is None or locator_value is None) and isinstance(repositories, Mapping) and len(repositories) == 1:
-        repository = next(iter(repositories.values()))
-        if isinstance(repository, Mapping):
-            revision_value = repository.get("revision")
-            locator_value = repository.get("locator")
-    revision = _immutable_revision(revision_value)
+    raw_repositories = model.get("repositories")
+    repositories: dict[str, dict[str, str]] = {}
+    if isinstance(raw_repositories, Mapping) and raw_repositories:
+        for name, repository in raw_repositories.items():
+            if not isinstance(name, str) or not name or not isinstance(repository, Mapping):
+                raise RuntimeError("model manifest repositories must be named objects")
+            repositories[name] = {
+                "repository": _repository_id(repository.get("locator")),
+                "revision": _immutable_revision(repository.get("revision")),
+            }
+    else:
+        repositories["model"] = {
+            "repository": _repository_id(model.get("locator")),
+            "revision": _immutable_revision(model.get("revision")),
+        }
+
     records = _manifest_file_records(model.get("files"))
+    normalized_records: list[dict[str, Any]] = []
+    for record in records:
+        source = record.get("source")
+        if source is None and len(repositories) == 1:
+            source = next(iter(repositories))
+        if not isinstance(source, str) or source not in repositories:
+            raise RuntimeError(
+                f"model manifest file source is not a declared repository: {record['path']}"
+            )
+        normalized_records.append({**record, "source": source})
+
+    try:
+        from components.Chatterbox.runtime.provisioning import build_identity_contract
+
+        fingerprint = build_identity_contract(value, None)["model"]["fingerprint"]
+    except Exception as exc:
+        raise RuntimeError("model manifest fingerprint could not be derived") from exc
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise RuntimeError("model manifest fingerprint is invalid")
+
+    singular_repository = next(iter(repositories.values())) if len(repositories) == 1 else None
     return {
-        "repository": _repository_id(locator_value),
-        "revision": revision,
+        "repository": singular_repository["repository"] if singular_repository else None,
+        "revision": singular_repository["revision"] if singular_repository else None,
+        "repositories": repositories,
+        "fingerprint": fingerprint,
         "profile": profile,
         "variant": profile,
         "loader_kind": loader_kind,
         "family": family,
-        "files": records,
-        "allow_patterns": [record["path"] for record in records],
+        "files": tuple(normalized_records),
+        "allow_patterns": [record["path"] for record in normalized_records],
     }
 
 
