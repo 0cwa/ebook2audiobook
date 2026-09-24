@@ -754,8 +754,22 @@ def validate_request(
         legacy_variant = normalize_model_variant(model.get("t3_model", profile))
         if legacy_variant != profile:
             raise WorkerRequestError("invalid_request", "multilingual model variant does not match the profile")
-    revision = _safe_string(model.get("revision"), "model revision", max_length=512)
+    fingerprint_value = model.get("fingerprint")
+    fingerprint = None
+    if fingerprint_value is not None:
+        fingerprint = _safe_string(
+            fingerprint_value,
+            "model fingerprint",
+            max_length=256,
+        )
+    revision_value = model.get("revision")
+    revision = None
+    if revision_value is not None:
+        revision = _safe_string(revision_value, "model revision", max_length=512)
     if expected_model is not None:
+        expected_fingerprint = expected_model.get("fingerprint")
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            raise WorkerRequestError("invalid_request", "model fingerprint does not match the worker")
         expected_revision = expected_model.get("revision")
         if expected_revision and revision != expected_revision:
             raise WorkerRequestError("invalid_request", "model revision does not match the worker")
@@ -834,6 +848,7 @@ def validate_request(
     return {
         "id": request_id,
         "language": language,
+        "fingerprint": fingerprint,
         "revision": revision,
         "model_profile": profile,
         "loader_kind": profile_spec.loader_kind,
@@ -893,6 +908,7 @@ class ChatterboxWorker:
     ):
         self.approved_roots = approved_roots
         self.model_revision = model_revision
+        self.model_fingerprint: str | None = None
         self.model_manifest_path = model_manifest_path
         self.approved_model_root = approved_model_root
         self.approved_manifest_root = approved_manifest_root
@@ -949,6 +965,7 @@ class ChatterboxWorker:
                     (manifest_root,),
                 )
                 self.model_revision = manifest["revision"]
+                self.model_fingerprint = manifest["fingerprint"]
                 self.model_profile = manifest["profile"]
                 self.model_variant = manifest["profile"]
                 self.loader_kind = manifest["loader_kind"]
@@ -1096,10 +1113,11 @@ class ChatterboxWorker:
                 request,
                 configured_roots=self.approved_roots,
                 expected_model={
+                    "fingerprint": self.model_fingerprint,
                     "revision": self.model_revision,
                     "profile": self.model_profile,
                     "family": self.model_family,
-                } if self.model_revision else None,
+                } if self.model_fingerprint else None,
                 supported_languages=self.supported_languages,
                 minimum_prompt_seconds=self.minimum_prompt_seconds,
             )
