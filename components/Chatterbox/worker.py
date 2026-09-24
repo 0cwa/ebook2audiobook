@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from typing import Any, Callable, Mapping, Sequence
+import wave
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPOSITORY_ROOT) not in sys.path:
@@ -260,6 +261,48 @@ def _load_local_chatterbox_model(snapshot_path: Path, variant: str) -> tuple[Any
 
     model.watermarker = _V3TrimmedWatermarker(model.watermarker)
     return model, True
+
+
+def _load_local_turbo_model(snapshot_path: Path, profile: str) -> tuple[Any, bool]:
+    """Load Turbo/Nano from the verified snapshot with a narrow local fallback."""
+
+    if profile not in {"turbo", "nano"}:
+        raise RuntimeError(f"unsupported Turbo-family Chatterbox profile: {profile}")
+
+    import inspect
+
+    native_class = None
+    try:
+        from chatterbox.tts_turbo import ChatterboxTurboTTS
+        native_class = ChatterboxTurboTTS
+    except Exception:
+        native_class = None
+
+    nano = profile == "nano"
+    if native_class is not None:
+        from_local = native_class.from_local
+        try:
+            parameters = inspect.signature(from_local).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+
+        if not nano:
+            kwargs: dict[str, Any] = {"device": DEVICE}
+            if "nano" in parameters:
+                kwargs["nano"] = False
+            return from_local(str(snapshot_path), **kwargs), False
+
+        if "nano" in parameters:
+            try:
+                from chatterbox.models.t3.llama_configs import LLAMA_CONFIGS
+            except Exception:
+                LLAMA_CONFIGS = {}
+            if "GPT2_small" in LLAMA_CONFIGS:
+                return from_local(str(snapshot_path), device=DEVICE, nano=True), False
+
+    from components.Chatterbox.turbo_compat import load_turbo_compat
+
+    return load_turbo_compat(snapshot_path, device=DEVICE, nano=nano), True
 
 
 def _message(message: Mapping[str, Any]) -> None:
@@ -625,7 +668,12 @@ def _validate_activation_chain(model_root: Path) -> None:
         raise RuntimeError("activation receipt local model load check did not pass")
 
 
-def _prompt(prompt: Any, roots: Sequence[Path]) -> dict[str, Any] | None:
+def _prompt(
+    prompt: Any,
+    roots: Sequence[Path],
+    *,
+    minimum_prompt_seconds: float | None = None,
+) -> dict[str, Any] | None:
     if prompt is None:
         return None
     if not isinstance(prompt, Mapping):
@@ -641,6 +689,27 @@ def _prompt(prompt: Any, roots: Sequence[Path]) -> dict[str, Any] | None:
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if actual != digest:
             raise WorkerRequestError("voice_missing", "voice prompt checksum does not match")
+    if minimum_prompt_seconds is not None:
+        try:
+            with wave.open(str(path), "rb") as stream:
+                if stream.getnchannels() != CHANNELS or stream.getframerate() != SAMPLE_RATE:
+                    raise WorkerRequestError(
+                        "invalid_request",
+                        "voice prompt must be mono 24 kHz WAV audio",
+                    )
+                duration = stream.getnframes() / float(stream.getframerate())
+        except WorkerRequestError:
+            raise
+        except (EOFError, OSError, wave.Error) as exc:
+            raise WorkerRequestError(
+                "invalid_request",
+                "voice prompt could not be decoded as WAV audio",
+            ) from exc
+        if duration <= minimum_prompt_seconds:
+            raise WorkerRequestError(
+                "invalid_request",
+                f"voice prompt must be longer than {minimum_prompt_seconds:g} seconds",
+            )
     return {"path": str(path), "sha256": digest}
 
 
@@ -650,6 +719,7 @@ def validate_request(
     configured_roots: Any = None,
     expected_model: Mapping[str, str] | None = None,
     supported_languages: Sequence[str] = SUPPORTED_LANGUAGES,
+    minimum_prompt_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Validate and normalize a synthesis request without importing runtime dependencies."""
 
@@ -666,11 +736,24 @@ def validate_request(
     model = request.get("model")
     if not isinstance(model, Mapping):
         raise WorkerRequestError("invalid_request", "model must be an object")
-    if model.get("family") != MODEL_FAMILY:
+    profile = normalize_model_profile(model.get("profile", model.get("t3_model")))
+    if profile is None:
+        raise WorkerRequestError("invalid_request", "unsupported Chatterbox model profile")
+    profile_spec = model_profile_spec(profile)
+    if model.get("family") != profile_spec.family:
         raise WorkerRequestError("invalid_request", "unsupported Chatterbox model family")
-    variant = normalize_model_variant(model.get("t3_model"))
-    if variant is None:
-        raise WorkerRequestError("invalid_request", "unsupported Chatterbox multilingual model variant")
+    loader_kind = model.get("loader_kind", profile_spec.loader_kind)
+    if loader_kind != profile_spec.loader_kind:
+        raise WorkerRequestError("invalid_request", "model loader kind does not match the profile")
+    if profile_spec.loader_kind != "multilingual" and model.get("t3_model") is not None:
+        raise WorkerRequestError(
+            "invalid_request",
+            "Turbo/Nano profiles must not be encoded as multilingual t3_model variants",
+        )
+    if profile_spec.loader_kind == "multilingual":
+        legacy_variant = normalize_model_variant(model.get("t3_model", profile))
+        if legacy_variant != profile:
+            raise WorkerRequestError("invalid_request", "multilingual model variant does not match the profile")
     fingerprint_value = model.get("fingerprint")
     fingerprint = None
     if fingerprint_value is not None:
@@ -685,15 +768,19 @@ def validate_request(
         revision = _safe_string(revision_value, "model revision", max_length=512)
     if expected_model is not None:
         expected_fingerprint = expected_model.get("fingerprint")
-        if expected_fingerprint:
-            if fingerprint != expected_fingerprint:
-                raise WorkerRequestError("invalid_request", "model fingerprint does not match the worker")
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            raise WorkerRequestError("invalid_request", "model fingerprint does not match the worker")
         expected_revision = expected_model.get("revision")
         if expected_revision and revision != expected_revision:
             raise WorkerRequestError("invalid_request", "model revision does not match the worker")
-        expected_variant = normalize_model_variant(expected_model.get("variant"))
-        if expected_variant and variant != expected_variant:
-            raise WorkerRequestError("invalid_request", "model variant does not match the worker")
+        expected_profile = normalize_model_profile(
+            expected_model.get("profile", expected_model.get("variant"))
+        )
+        if expected_profile and profile != expected_profile:
+            raise WorkerRequestError("invalid_request", "model profile does not match the worker")
+        expected_family = expected_model.get("family")
+        if expected_family and profile_spec.family != expected_family:
+            raise WorkerRequestError("invalid_request", "model family does not match the worker")
 
     language = _safe_string(request.get("language"), "language", max_length=16).lower()
     if language not in supported_languages:
@@ -742,7 +829,11 @@ def validate_request(
             normalized_segments.append({
                 "kind": "text",
                 "text": text,
-                "voice_prompt": _prompt(prompt, roots["voice"]),
+                "voice_prompt": _prompt(
+                    prompt,
+                    roots["voice"],
+                    minimum_prompt_seconds=minimum_prompt_seconds,
+                ),
             })
         elif kind == "silence":
             seconds = segment.get("seconds")
@@ -759,6 +850,8 @@ def validate_request(
         "language": language,
         "fingerprint": fingerprint,
         "revision": revision,
+        "model_profile": profile,
+        "loader_kind": profile_spec.loader_kind,
         "segments": normalized_segments,
         "output": final_output,
         "roots": roots,
@@ -822,8 +915,13 @@ class ChatterboxWorker:
         self.model_loader = model_loader
         self.require_activation_receipt = require_activation_receipt
         self.model = None
+        self.model_profile = MODEL_VARIANT
         self.model_variant = MODEL_VARIANT
+        self.loader_kind = "multilingual"
+        self.model_family = MODEL_FAMILY
+        self.minimum_prompt_seconds: float | None = None
         self._v3_compat_mode = False
+        self._turbo_compat_mode = False
         self.supported_languages = SUPPORTED_LANGUAGES
         self.sample_rate = SAMPLE_RATE
         self._audio_backend = None
@@ -870,36 +968,52 @@ class ChatterboxWorker:
                 self.model_fingerprint = manifest["fingerprint"]
                 self.model_profile = manifest["profile"]
                 self.model_variant = manifest["profile"]
-                if manifest["loader_kind"] != "multilingual":
-                    raise RuntimeError(
-                        f"unsupported Chatterbox loader kind in this worker: {manifest['loader_kind']}"
-                    )
+                self.loader_kind = manifest["loader_kind"]
+                self.model_family = manifest["family"]
+                profile_spec = model_profile_spec(self.model_profile)
+                self.minimum_prompt_seconds = profile_spec.minimum_prompt_seconds
                 try:
                     snapshot_path = _verify_model_snapshot(model_root, manifest["files"], model_root)
                 except Exception as exc:
                     raise RuntimeError(f"verified local Chatterbox model is unavailable: {exc}") from exc
-                try:
-                    with redirect_stdout(sys.stderr):
-                        _require_local_pkuseg_data()
-                        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-                except Exception as exc:
-                    raise RuntimeError(
-                        "Chatterbox is unavailable; install the pinned worker runtime"
-                    ) from exc
-                get_supported_languages = getattr(ChatterboxMultilingualTTS, "get_supported_languages", None)
-                if not callable(get_supported_languages):
-                    raise RuntimeError(
-                        "pinned Chatterbox runtime does not expose get_supported_languages()"
-                    )
-                runtime_languages = _runtime_language_ids(get_supported_languages())
-                try:
-                    with redirect_stdout(sys.stderr):
-                        self.model, self._v3_compat_mode = _load_local_chatterbox_model(
-                            snapshot_path,
-                            self.model_variant,
+
+                if self.loader_kind == "multilingual":
+                    try:
+                        with redirect_stdout(sys.stderr):
+                            _require_local_pkuseg_data()
+                            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "Chatterbox is unavailable; install the pinned worker runtime"
+                        ) from exc
+                    get_supported_languages = getattr(ChatterboxMultilingualTTS, "get_supported_languages", None)
+                    if not callable(get_supported_languages):
+                        raise RuntimeError(
+                            "pinned Chatterbox runtime does not expose get_supported_languages()"
                         )
-                except Exception as exc:
-                    raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
+                    runtime_languages = _runtime_language_ids(get_supported_languages())
+                    try:
+                        with redirect_stdout(sys.stderr):
+                            self.model, self._v3_compat_mode = _load_local_chatterbox_model(
+                                snapshot_path,
+                                self.model_profile,
+                            )
+                    except Exception as exc:
+                        raise RuntimeError(f"Chatterbox model load failed: {exc}") from exc
+                elif self.loader_kind == "turbo":
+                    runtime_languages = profile_spec.supported_languages
+                    try:
+                        with redirect_stdout(sys.stderr):
+                            self.model, self._turbo_compat_mode = _load_local_turbo_model(
+                                snapshot_path,
+                                self.model_profile,
+                            )
+                    except Exception as exc:
+                        raise RuntimeError(f"Chatterbox {self.model_profile} model load failed: {exc}") from exc
+                else:
+                    raise RuntimeError(
+                        f"unsupported Chatterbox loader kind in this worker: {self.loader_kind}"
+                    )
             except ReceiptRepairRequiredError:
                 raise
             except Exception as exc:
@@ -923,6 +1037,24 @@ class ChatterboxWorker:
             self._audio_backend = (torch, torchaudio)
         return self._audio_backend
 
+    def _generation_kwargs(
+        self,
+        request: Mapping[str, Any],
+        segment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.loader_kind == "turbo":
+            kwargs: dict[str, Any] = {}
+        else:
+            kwargs = {"language_id": request["language"]}
+            if self._v3_compat_mode:
+                # Match the upstream V3 default introduced with the opt-in
+                # checkpoint rather than 0.1.7's V2-era default of 2.0.
+                kwargs["repetition_penalty"] = 1.2
+        prompt = segment.get("voice_prompt")
+        if prompt is not None:
+            kwargs["audio_prompt_path"] = prompt["path"]
+        return kwargs
+
     def _generate_file(self, request: dict[str, Any], cancel: threading.Event) -> dict[str, Any]:
         torch, torchaudio = self._load_audio_backend()
         chunks = []
@@ -933,14 +1065,7 @@ class ChatterboxWorker:
                 samples = int(round(segment["seconds"] * SAMPLE_RATE))
                 chunks.append(torch.zeros((CHANNELS, samples), dtype=torch.float32))
                 continue
-            kwargs = {"language_id": request["language"]}
-            if self._v3_compat_mode:
-                # Match the upstream V3 default introduced with the opt-in
-                # checkpoint rather than 0.1.7's V2-era default of 2.0.
-                kwargs["repetition_penalty"] = 1.2
-            prompt = segment.get("voice_prompt")
-            if prompt is not None:
-                kwargs["audio_prompt_path"] = prompt["path"]
+            kwargs = self._generation_kwargs(request, segment)
             try:
                 with redirect_stdout(sys.stderr), torch.inference_mode():
                     waveform = self.model.generate(segment["text"], **kwargs)
@@ -990,9 +1115,11 @@ class ChatterboxWorker:
                 expected_model={
                     "fingerprint": self.model_fingerprint,
                     "revision": self.model_revision,
-                    "variant": self.model_variant,
+                    "profile": self.model_profile,
+                    "family": self.model_family,
                 } if self.model_fingerprint else None,
                 supported_languages=self.supported_languages,
+                minimum_prompt_seconds=self.minimum_prompt_seconds,
             )
             result = self._generate_file(normalized, cancel)
             if cancel.is_set():

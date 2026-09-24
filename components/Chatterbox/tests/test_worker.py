@@ -17,6 +17,7 @@ import time
 import types
 import unittest
 import zipfile
+import wave
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
@@ -223,6 +224,8 @@ class WorkerValidationTests(unittest.TestCase):
                     "variant": "v3",
                 },
             )
+            self.assertEqual(normalized["model_profile"], "v3")
+            self.assertEqual(normalized["loader_kind"], "multilingual")
             self.assertEqual(normalized["fingerprint"], "chatterbox-v3-aaaaaaaaaaaaaaaa")
             with self.assertRaisesRegex(worker.WorkerRequestError, "fingerprint does not match"):
                 worker.validate_request(
@@ -233,7 +236,7 @@ class WorkerValidationTests(unittest.TestCase):
                         "variant": "v3",
                     },
                 )
-            with self.assertRaisesRegex(worker.WorkerRequestError, "variant does not match"):
+            with self.assertRaisesRegex(worker.WorkerRequestError, "profile does not match"):
                 worker.validate_request(
                     request,
                     expected_model={
@@ -242,6 +245,233 @@ class WorkerValidationTests(unittest.TestCase):
                         "variant": "v2",
                     },
                 )
+
+    def test_turbo_request_is_english_only_preserves_native_tags_and_has_no_t3_variant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = {
+                "protocol": 1,
+                "id": "request-turbo",
+                "op": "synthesize",
+                "model": {
+                    "profile": "turbo",
+                    "loader_kind": "turbo",
+                    "family": "chatterbox-turbo",
+                    "fingerprint": "chatterbox-turbo-aaaaaaaaaaaaaaaa",
+                    "revision": "e" * 40,
+                },
+                "device": "cpu",
+                "language": "en",
+                "approved_roots": {"voice": [str(root)], "output": [str(root)]},
+                "segments": [{
+                    "kind": "text",
+                    "text": "That was unexpected [chuckle], but it worked.",
+                }],
+                "output": {
+                    "path": str(root / "sentence.flac"),
+                    "sample_rate": 24000,
+                    "channels": 1,
+                },
+            }
+            normalized = worker.validate_request(
+                request,
+                expected_model={
+                    "fingerprint": "chatterbox-turbo-aaaaaaaaaaaaaaaa",
+                    "revision": "e" * 40,
+                    "profile": "turbo",
+                    "family": "chatterbox-turbo",
+                },
+                supported_languages=("en",),
+                minimum_prompt_seconds=5.0,
+            )
+            self.assertEqual(normalized["model_profile"], "turbo")
+            self.assertEqual(normalized["loader_kind"], "turbo")
+            self.assertEqual(
+                normalized["segments"][0]["text"],
+                "That was unexpected [chuckle], but it worked.",
+            )
+
+            wrong_language = json.loads(json.dumps(request))
+            wrong_language["language"] = "sv"
+            with self.assertRaisesRegex(worker.WorkerRequestError, "language is not supported"):
+                worker.validate_request(
+                    wrong_language,
+                    supported_languages=("en",),
+                    minimum_prompt_seconds=5.0,
+                )
+
+            encoded_as_t3 = json.loads(json.dumps(request))
+            encoded_as_t3["model"]["t3_model"] = "turbo"
+            with self.assertRaisesRegex(
+                worker.WorkerRequestError,
+                "must not be encoded as multilingual t3_model",
+            ):
+                worker.validate_request(
+                    encoded_as_t3,
+                    supported_languages=("en",),
+                    minimum_prompt_seconds=5.0,
+                )
+
+    def test_turbo_prompt_must_be_strictly_longer_than_five_seconds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def write_prompt(path: Path, seconds: float) -> None:
+                with wave.open(str(path), "wb") as stream:
+                    stream.setnchannels(1)
+                    stream.setsampwidth(2)
+                    stream.setframerate(24000)
+                    stream.writeframes(b"\x00\x00" * int(round(24000 * seconds)))
+
+            prompt = root / "prompt.wav"
+            request = {
+                "protocol": 1,
+                "id": "request-prompt",
+                "op": "synthesize",
+                "model": {
+                    "profile": "nano",
+                    "loader_kind": "turbo",
+                    "family": "chatterbox-turbo",
+                    "revision": "f" * 40,
+                },
+                "device": "cpu",
+                "language": "en",
+                "approved_roots": {"voice": [str(root)], "output": [str(root)]},
+                "segments": [{
+                    "kind": "text",
+                    "text": "Hello",
+                    "voice_prompt": {"path": str(prompt)},
+                }],
+                "output": {
+                    "path": str(root / "sentence.flac"),
+                    "sample_rate": 24000,
+                    "channels": 1,
+                },
+            }
+
+            write_prompt(prompt, 5.0)
+            with self.assertRaisesRegex(worker.WorkerRequestError, "longer than 5 seconds"):
+                worker.validate_request(
+                    request,
+                    supported_languages=("en",),
+                    minimum_prompt_seconds=5.0,
+                )
+
+            write_prompt(prompt, 5.01)
+            normalized = worker.validate_request(
+                request,
+                supported_languages=("en",),
+                minimum_prompt_seconds=5.0,
+            )
+            self.assertEqual(
+                normalized["segments"][0]["voice_prompt"]["path"],
+                str(prompt),
+            )
+
+    def test_generation_kwargs_never_pass_language_id_to_turbo_family(self):
+        instance = worker.ChatterboxWorker(model_loader=lambda: types.SimpleNamespace(sr=24000))
+        instance.loader_kind = "turbo"
+        kwargs = instance._generation_kwargs(
+            {"language": "en"},
+            {"kind": "text", "voice_prompt": {"path": "/approved/prompt.wav"}},
+        )
+        self.assertEqual(kwargs, {"audio_prompt_path": "/approved/prompt.wav"})
+
+        instance.loader_kind = "multilingual"
+        instance._v3_compat_mode = True
+        kwargs = instance._generation_kwargs(
+            {"language": "sv"},
+            {"kind": "text", "voice_prompt": None},
+        )
+        self.assertEqual(
+            kwargs,
+            {"language_id": "sv", "repetition_penalty": 1.2},
+        )
+
+    def test_turbo_and_nano_native_loader_flags_are_explicit(self):
+        calls = []
+
+        class FakeTurbo:
+            @classmethod
+            def from_local(cls, checkpoint_dir, device, nano=False):
+                calls.append((checkpoint_dir, device, nano))
+                return types.SimpleNamespace(sr=24000)
+
+        chatterbox_package = types.ModuleType("chatterbox")
+        chatterbox_package.__path__ = []
+        turbo_module = types.ModuleType("chatterbox.tts_turbo")
+        turbo_module.ChatterboxTurboTTS = FakeTurbo
+        models_package = types.ModuleType("chatterbox.models")
+        models_package.__path__ = []
+        t3_package = types.ModuleType("chatterbox.models.t3")
+        t3_package.__path__ = []
+        configs_module = types.ModuleType("chatterbox.models.t3.llama_configs")
+        configs_module.LLAMA_CONFIGS = {"GPT2_small": {}}
+
+        modules = {
+            "chatterbox": chatterbox_package,
+            "chatterbox.tts_turbo": turbo_module,
+            "chatterbox.models": models_package,
+            "chatterbox.models.t3": t3_package,
+            "chatterbox.models.t3.llama_configs": configs_module,
+        }
+        with patch.dict(sys.modules, modules):
+            turbo_model, turbo_compat = worker._load_local_turbo_model(
+                Path("/verified/turbo"),
+                "turbo",
+            )
+            nano_model, nano_compat = worker._load_local_turbo_model(
+                Path("/verified/nano"),
+                "nano",
+            )
+
+        self.assertEqual(turbo_model.sr, 24000)
+        self.assertEqual(nano_model.sr, 24000)
+        self.assertFalse(turbo_compat)
+        self.assertFalse(nano_compat)
+        self.assertEqual(
+            calls,
+            [
+                ("/verified/turbo", "cpu", False),
+                ("/verified/nano", "cpu", True),
+            ],
+        )
+
+    def test_nano_falls_back_when_pinned_runtime_has_no_nano_selector(self):
+        calls = []
+
+        class OldTurbo:
+            @classmethod
+            def from_local(cls, checkpoint_dir, device):
+                raise AssertionError("old native Turbo loader must not be used for Nano")
+
+        chatterbox_package = types.ModuleType("chatterbox")
+        chatterbox_package.__path__ = []
+        turbo_module = types.ModuleType("chatterbox.tts_turbo")
+        turbo_module.ChatterboxTurboTTS = OldTurbo
+        compat_module = types.ModuleType("components.Chatterbox.turbo_compat")
+
+        def load_turbo_compat(snapshot, *, device, nano):
+            calls.append((str(snapshot), device, nano))
+            return types.SimpleNamespace(sr=24000)
+
+        compat_module.load_turbo_compat = load_turbo_compat
+        with patch.dict(
+            sys.modules,
+            {
+                "chatterbox": chatterbox_package,
+                "chatterbox.tts_turbo": turbo_module,
+                "components.Chatterbox.turbo_compat": compat_module,
+            },
+        ):
+            model, compatibility_mode = worker._load_local_turbo_model(
+                Path("/verified/nano"),
+                "nano",
+            )
+
+        self.assertEqual(model.sr, 24000)
+        self.assertTrue(compatibility_mode)
+        self.assertEqual(calls, [("/verified/nano", "cpu", True)])
 
     def test_manifest_file_records_accept_profile_specific_declared_sets(self):
         v3_records = [

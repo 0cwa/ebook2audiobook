@@ -49,12 +49,32 @@ _MODEL_PROFILE_SPECS: Final = {
         fixed_language_id=None,
         minimum_prompt_seconds=None,
     ),
+    "turbo": ModelProfileSpec(
+        profile="turbo",
+        loader_kind="turbo",
+        family="chatterbox-turbo",
+        supported_languages=("en",),
+        fixed_language_id="en",
+        minimum_prompt_seconds=5.0,
+    ),
+    "nano": ModelProfileSpec(
+        profile="nano",
+        loader_kind="turbo",
+        family="chatterbox-turbo",
+        supported_languages=("en",),
+        fixed_language_id="en",
+        minimum_prompt_seconds=5.0,
+    ),
 }
 _MODEL_PROFILE_ALIASES: Final = {
     "v2": "v2",
     "multilingual-v2": "v2",
     "v3": "v3",
     "multilingual-v3": "v3",
+    "turbo": "turbo",
+    "chatterbox-turbo": "turbo",
+    "nano": "nano",
+    "chatterbox-nano": "nano",
 }
 _SUPPORTED_MODEL_PROFILES = tuple(_MODEL_PROFILE_SPECS)
 
