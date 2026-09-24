@@ -46,7 +46,9 @@ class _RuntimeDetails:
     manifest_path: Path
     model_root: Path
     manifest_root: Path
-    model_revision: str
+    model_profile: str
+    model_fingerprint: str
+    model_revision: str | None
 
 
 def _selected_model_profile(session: Any) -> str:
@@ -152,9 +154,15 @@ def _runtime_details(variant: str = DEFAULT_MODEL_VARIANT) -> _RuntimeDetails:
     environment = status.get("environment")
     if not isinstance(environment, Mapping):
         raise ValueError("Chatterbox runtime status is missing environment")
+    model_profile = status.get("model_profile")
+    if not isinstance(model_profile, str) or not model_profile:
+        raise ValueError("Chatterbox runtime status is missing model_profile")
+    model_fingerprint = status.get("model_fingerprint")
+    if not isinstance(model_fingerprint, str) or not model_fingerprint:
+        raise ValueError("Chatterbox runtime status is missing model_fingerprint")
     model_revision = status.get("model_revision")
-    if not isinstance(model_revision, str) or not model_revision:
-        raise ValueError("Chatterbox runtime status is missing model_revision")
+    if model_revision is not None and (not isinstance(model_revision, str) or not model_revision):
+        raise ValueError("Chatterbox runtime status has an invalid model_revision")
 
     return _RuntimeDetails(
         interpreter=_status_path(status, "interpreter"),
@@ -162,6 +170,8 @@ def _runtime_details(variant: str = DEFAULT_MODEL_VARIANT) -> _RuntimeDetails:
         manifest_path=_status_path(status, "manifest_path"),
         model_root=_status_path(status, "verified_model_root"),
         manifest_root=_status_path(status, "manifest_root"),
+        model_profile=model_profile,
+        model_fingerprint=model_fingerprint,
         model_revision=model_revision,
     )
 
@@ -342,8 +352,10 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             "profile": self.model_profile,
             "loader_kind": self.loader_kind,
             "family": self.model_family,
-            "revision": runtime.model_revision,
+            "fingerprint": runtime.model_fingerprint,
         }
+        if runtime.model_revision is not None:
+            identity["revision"] = runtime.model_revision
         if self.loader_kind == "multilingual":
             identity["t3_model"] = self.model_profile
         return identity
