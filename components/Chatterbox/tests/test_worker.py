@@ -526,6 +526,54 @@ class WorkerValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "safe relative paths"):
                 worker._read_model_manifest(manifest, (root,))
 
+    def test_multi_repository_manifest_resolves_sources_and_uses_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "runtime-manifest.json"
+            records = [
+                {
+                    "path": path,
+                    "source": "base" if index < 3 else "pack",
+                    "size_bytes": 1,
+                    "sha256": "0" * 64,
+                }
+                for index, path in enumerate(CANONICAL_MODEL_FILE_PATHS)
+            ]
+            manifest_path.write_text(json.dumps({
+                "sources": {
+                    "model": {
+                        "profile": "v2",
+                        "loader_kind": "multilingual",
+                        "family": "chatterbox-multilingual",
+                        "repositories": {
+                            "base": {
+                                "locator": "https://huggingface.co/Example/base",
+                                "revision": "a" * 40,
+                            },
+                            "pack": {
+                                "locator": "https://huggingface.co/Example/pack",
+                                "revision": "b" * 40,
+                            },
+                        },
+                        "files": records,
+                    },
+                },
+            }), encoding="utf-8")
+
+            parsed = worker._read_model_manifest(manifest_path, (root,))
+            self.assertIsNone(parsed["repository"])
+            self.assertIsNone(parsed["revision"])
+            self.assertEqual(parsed["profile"], "v2")
+            self.assertTrue(parsed["fingerprint"].startswith("chatterbox-v2-"))
+            self.assertEqual(parsed["files"][0]["source"], "base")
+            self.assertEqual(parsed["files"][-1]["source"], "pack")
+
+            invalid = json.loads(manifest_path.read_text(encoding="utf-8"))
+            invalid["sources"]["model"]["files"][0]["source"] = "missing"
+            manifest_path.write_text(json.dumps(invalid), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not a declared repository"):
+                worker._read_model_manifest(manifest_path, (root,))
+
     def test_manifest_requires_nonempty_unique_safe_declared_model_files(self):
         records = [
             {"path": path, "size_bytes": 1, "sha256": "0" * 64}
