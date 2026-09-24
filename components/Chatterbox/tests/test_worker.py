@@ -203,7 +203,9 @@ class WorkerValidationTests(unittest.TestCase):
                 "id": "request-v3",
                 "op": "synthesize",
                 "model": {
+                    "profile": "v3",
                     "family": "chatterbox-multilingual",
+                    "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
                     "revision": "d" * 40,
                     "t3_model": "v3",
                 },
@@ -215,13 +217,30 @@ class WorkerValidationTests(unittest.TestCase):
             }
             normalized = worker.validate_request(
                 request,
-                expected_model={"revision": "d" * 40, "variant": "v3"},
+                expected_model={
+                    "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
+                    "revision": "d" * 40,
+                    "variant": "v3",
+                },
             )
-            self.assertEqual(normalized["model"]["t3_model"], "v3")
+            self.assertEqual(normalized["fingerprint"], "chatterbox-v3-aaaaaaaaaaaaaaaa")
+            with self.assertRaisesRegex(worker.WorkerRequestError, "fingerprint does not match"):
+                worker.validate_request(
+                    request,
+                    expected_model={
+                        "fingerprint": "chatterbox-v3-bbbbbbbbbbbbbbbb",
+                        "revision": "d" * 40,
+                        "variant": "v3",
+                    },
+                )
             with self.assertRaisesRegex(worker.WorkerRequestError, "variant does not match"):
                 worker.validate_request(
                     request,
-                    expected_model={"revision": "d" * 40, "variant": "v2"},
+                    expected_model={
+                        "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
+                        "revision": "d" * 40,
+                        "variant": "v2",
+                    },
                 )
 
     def test_manifest_file_records_accept_profile_specific_declared_sets(self):
