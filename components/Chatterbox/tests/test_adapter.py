@@ -78,6 +78,8 @@ class ChatterboxAdapterTests(unittest.TestCase):
                 manifest_path=Path("/approved/runtime-manifest.json"),
                 model_root=Path("/approved/model"),
                 manifest_root=Path("/approved"),
+                model_profile="v2",
+                model_fingerprint="chatterbox-v2-aaaaaaaaaaaaaaaa",
                 model_revision="5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
             ),
         )
@@ -417,6 +419,8 @@ assert loaded._test_registry["chatterbox"] is loaded.Chatterbox
                 manifest_path=manifest,
                 model_root=model_root,
                 manifest_root=runtime_root,
+                model_profile="v2",
+                model_fingerprint="chatterbox-v2-aaaaaaaaaaaaaaaa",
                 model_revision=revision,
             )
             engine = chatterbox_module.Chatterbox(self.session(root))
