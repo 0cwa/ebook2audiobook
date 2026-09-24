@@ -204,7 +204,9 @@ class WorkerValidationTests(unittest.TestCase):
                 "id": "request-v3",
                 "op": "synthesize",
                 "model": {
+                    "profile": "v3",
                     "family": "chatterbox-multilingual",
+                    "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
                     "revision": "d" * 40,
                     "t3_model": "v3",
                 },
@@ -216,14 +218,32 @@ class WorkerValidationTests(unittest.TestCase):
             }
             normalized = worker.validate_request(
                 request,
-                expected_model={"revision": "d" * 40, "variant": "v3"},
+                expected_model={
+                    "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
+                    "revision": "d" * 40,
+                    "variant": "v3",
+                },
             )
             self.assertEqual(normalized["model_profile"], "v3")
             self.assertEqual(normalized["loader_kind"], "multilingual")
+            self.assertEqual(normalized["fingerprint"], "chatterbox-v3-aaaaaaaaaaaaaaaa")
+            with self.assertRaisesRegex(worker.WorkerRequestError, "fingerprint does not match"):
+                worker.validate_request(
+                    request,
+                    expected_model={
+                        "fingerprint": "chatterbox-v3-bbbbbbbbbbbbbbbb",
+                        "revision": "d" * 40,
+                        "variant": "v3",
+                    },
+                )
             with self.assertRaisesRegex(worker.WorkerRequestError, "profile does not match"):
                 worker.validate_request(
                     request,
-                    expected_model={"revision": "d" * 40, "variant": "v2"},
+                    expected_model={
+                        "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
+                        "revision": "d" * 40,
+                        "variant": "v2",
+                    },
                 )
 
     def test_turbo_request_is_english_only_preserves_native_tags_and_has_no_t3_variant(self):
@@ -237,6 +257,7 @@ class WorkerValidationTests(unittest.TestCase):
                     "profile": "turbo",
                     "loader_kind": "turbo",
                     "family": "chatterbox-turbo",
+                    "fingerprint": "chatterbox-turbo-aaaaaaaaaaaaaaaa",
                     "revision": "e" * 40,
                 },
                 "device": "cpu",
@@ -255,6 +276,7 @@ class WorkerValidationTests(unittest.TestCase):
             normalized = worker.validate_request(
                 request,
                 expected_model={
+                    "fingerprint": "chatterbox-turbo-aaaaaaaaaaaaaaaa",
                     "revision": "e" * 40,
                     "profile": "turbo",
                     "family": "chatterbox-turbo",
