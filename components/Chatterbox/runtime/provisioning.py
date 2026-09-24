@@ -195,6 +195,8 @@ class HostRuntimeStatus(MappingABC[str, Any]):
     verified_model_root: Path | None
     runtime_root: Path | None
     manifest_root: Path | None
+    model_profile: str | None
+    model_fingerprint: str | None
     model_revision: str | None
     ambiguous_paths: tuple[str, ...] = ()
 
@@ -240,6 +242,8 @@ class HostRuntimeStatus(MappingABC[str, Any]):
             "verified_model_root": self.verified_model_root,
             "runtime_root": self.runtime_root,
             "manifest_root": self.manifest_root,
+            "model_profile": self.model_profile,
+            "model_fingerprint": self.model_fingerprint,
             "model_revision": self.model_revision,
             "ambiguous_paths": list(self.ambiguous_paths),
         }
@@ -1799,16 +1803,50 @@ def _host_target_status() -> dict[str, Any]:
     }
 
 
-def _manifest_model_revision(manifest_path: Path) -> str:
-    """Read the immutable model revision from the authoritative manifest."""
+def _manifest_model_contract(manifest_path: Path) -> dict[str, str | None]:
+    """Read request-facing model identity without assuming one repository."""
 
     manifest = _read_json(manifest_path)
     sources = manifest.get("sources")
     model = sources.get("model") if isinstance(sources, Mapping) else None
-    revision = model.get("revision") if isinstance(model, Mapping) else None
-    if not isinstance(revision, str) or not _HEX40.fullmatch(revision):
-        raise RuntimeManifestError("runtime manifest must contain an immutable model revision")
-    return revision.lower()
+    if not isinstance(model, Mapping):
+        raise RuntimeManifestError("runtime manifest must contain a model identity")
+    profile = _model_profile_id(model)
+    if profile is None:
+        raise RuntimeManifestError("runtime manifest must contain a supported model profile")
+    identity = build_identity_contract(manifest, None)
+    fingerprint = identity["model"]["fingerprint"]
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise RuntimeManifestError("runtime manifest model fingerprint is invalid")
+
+    # Compatibility only. Multi-repository profiles intentionally have no
+    # singular revision; their canonical fingerprint binds every repository.
+    revision = model.get("revision")
+    if revision is None:
+        repositories = _model_repositories(model)
+        if len(repositories) == 1:
+            revision = next(iter(repositories.values())).get("revision")
+    if revision is not None:
+        if not isinstance(revision, str) or not _HEX40.fullmatch(revision):
+            raise RuntimeManifestError("runtime manifest model revision must be immutable")
+        revision = revision.lower()
+
+    return {
+        "profile": profile,
+        "fingerprint": fingerprint,
+        "revision": revision,
+    }
+
+
+def _manifest_model_revision(manifest_path: Path) -> str:
+    """Compatibility accessor for legacy single-repository callers."""
+
+    revision = _manifest_model_contract(manifest_path)["revision"]
+    if revision is None:
+        raise RuntimeManifestError(
+            "runtime manifest has no singular model revision; use model_fingerprint"
+        )
+    return revision
 
 
 def _runtime_error_kind(error: BaseException) -> str | None:
@@ -1877,6 +1915,9 @@ def _host_selection(
     if model.get("status") == "ready" and isinstance(snapshot, str):
         verified_model_root = Path(snapshot)
 
+    model_contract = _manifest_model_contract(paths.manifest_path)
+    if model_contract["fingerprint"] != paths.model_fingerprint:
+        raise RuntimeManifestError("runtime manifest model fingerprint changed during selection")
     return {
         "interpreter": interpreter,
         "environment": environment,
@@ -1884,7 +1925,9 @@ def _host_selection(
         "verified_model_root": verified_model_root,
         "runtime_root": paths.runtime_dir,
         "manifest_root": paths.runtime_dir,
-        "model_revision": _manifest_model_revision(paths.manifest_path),
+        "model_profile": model_contract["profile"],
+        "model_fingerprint": model_contract["fingerprint"],
+        "model_revision": model_contract["revision"],
     }
 
 
@@ -1925,6 +1968,8 @@ def _host_record(
         verified_model_root=selected.get("verified_model_root"),
         runtime_root=selected.get("runtime_root"),
         manifest_root=selected.get("manifest_root"),
+        model_profile=selected.get("model_profile"),
+        model_fingerprint=selected.get("model_fingerprint"),
         model_revision=selected.get("model_revision"),
         ambiguous_paths=tuple(str(item) for item in ambiguous_paths),
     )
