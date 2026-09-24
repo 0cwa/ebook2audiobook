@@ -85,7 +85,7 @@ def _manifest(lock_sha256: str | None = None, *, unresolved: list[str] | None = 
                 "association_to_artifact": "unverified",
             },
             "model": {
-                "locator": "https://example.invalid/model",
+                "locator": "https://huggingface.co/Example/model",
                 "variant": "multilingual-v2",
                 "revision": "4" * 40,
                 "files": [
@@ -249,7 +249,7 @@ def _model_fixture(root: Path) -> tuple[object, Path, bytes]:
     }
     manifest["network"] = {
         "runtime_acquisition_urls": ["https://example.invalid/runtime"],
-        "model_acquisition_urls": ["https://example.invalid/model"],
+        "model_acquisition_urls": ["https://huggingface.co/Example/model"],
     }
     manifest["storage"] = {
         "contract_version": "1.0.0",
