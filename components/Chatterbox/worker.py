@@ -990,6 +990,24 @@ class ChatterboxWorker:
             self._audio_backend = (torch, torchaudio)
         return self._audio_backend
 
+    def _generation_kwargs(
+        self,
+        request: Mapping[str, Any],
+        segment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.loader_kind == "turbo":
+            kwargs: dict[str, Any] = {}
+        else:
+            kwargs = {"language_id": request["language"]}
+            if self._v3_compat_mode:
+                # Match the upstream V3 default introduced with the opt-in
+                # checkpoint rather than 0.1.7's V2-era default of 2.0.
+                kwargs["repetition_penalty"] = 1.2
+        prompt = segment.get("voice_prompt")
+        if prompt is not None:
+            kwargs["audio_prompt_path"] = prompt["path"]
+        return kwargs
+
     def _generate_file(self, request: dict[str, Any], cancel: threading.Event) -> dict[str, Any]:
         torch, torchaudio = self._load_audio_backend()
         chunks = []
@@ -1000,17 +1018,7 @@ class ChatterboxWorker:
                 samples = int(round(segment["seconds"] * SAMPLE_RATE))
                 chunks.append(torch.zeros((CHANNELS, samples), dtype=torch.float32))
                 continue
-            if self.loader_kind == "turbo":
-                kwargs: dict[str, Any] = {}
-            else:
-                kwargs = {"language_id": request["language"]}
-                if self._v3_compat_mode:
-                    # Match the upstream V3 default introduced with the opt-in
-                    # checkpoint rather than 0.1.7's V2-era default of 2.0.
-                    kwargs["repetition_penalty"] = 1.2
-            prompt = segment.get("voice_prompt")
-            if prompt is not None:
-                kwargs["audio_prompt_path"] = prompt["path"]
+            kwargs = self._generation_kwargs(request, segment)
             try:
                 with redirect_stdout(sys.stderr), torch.inference_mode():
                     waveform = self.model.generate(segment["text"], **kwargs)
