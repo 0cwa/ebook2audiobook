@@ -69,34 +69,49 @@
         {
           "path": "ve.pt",
           "size_bytes": 5698626,
-          "sha256": "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1"
+          "sha256": "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1",
+          "source": "model"
         },
         {
           "path": "t3_mtl23ls_v2.safetensors",
           "size_bytes": 2143989752,
-          "sha256": "b1237586127ce98e7800a68e49938eb5092846862aabcb6e17b2fda7889a6c75"
+          "sha256": "b1237586127ce98e7800a68e49938eb5092846862aabcb6e17b2fda7889a6c75",
+          "source": "model"
         },
         {
           "path": "s3gen.pt",
           "size_bytes": 1057165844,
-          "sha256": "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3"
+          "sha256": "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3",
+          "source": "model"
         },
         {
           "path": "grapheme_mtl_merged_expanded_v1.json",
           "size_bytes": 69989,
-          "sha256": "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf"
+          "sha256": "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf",
+          "source": "model"
         },
         {
           "path": "conds.pt",
           "size_bytes": 107374,
-          "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e"
+          "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e",
+          "source": "model"
         },
         {
           "path": "Cangjie5_TC.json",
           "size_bytes": 1920163,
-          "sha256": "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c"
+          "sha256": "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c",
+          "source": "model"
         }
-      ]
+      ],
+      "profile": "v2",
+      "loader_kind": "multilingual",
+      "family": "chatterbox-multilingual",
+      "repositories": {
+        "model": {
+          "locator": "https://huggingface.co/ResembleAI/chatterbox",
+          "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+        }
+      }
     }
   },
   "lock": {
@@ -278,7 +293,9 @@
       "chatterbox.mtl_tts",
       "perth"
     ],
-    "worker_self_test_args": ["--self-test"]
+    "worker_self_test_args": [
+      "--self-test"
+    ]
   },
   "identity_policy": {
     "runtime_identity": "runtime contract version, target, lock SHA-256, and selected wheel filenames, versions, and SHA-256 values",
@@ -287,7 +304,12 @@
     "activation_identity": "runtime fingerprint, model fingerprint, product profile, and worker protocol",
     "source_provenance": "source commits are inspected references with unverified association to published wheels",
     "policy_provenance_storage_excluded_from_executable_fingerprints": true,
-    "mutable_values_forbidden": ["master", "main", "latest", "unresolved"]
+    "mutable_values_forbidden": [
+      "master",
+      "main",
+      "latest",
+      "unresolved"
+    ]
   },
   "receipt_contract": {
     "runtime": "artifact-bound readiness implemented by U2",
