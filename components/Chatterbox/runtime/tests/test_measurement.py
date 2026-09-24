@@ -8,9 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from components.Chatterbox.runtime.contract_data import canonical_model_file_paths
 from components.Chatterbox.runtime.measurement import (
-    CANONICAL_MODEL_FILE_PATHS,
     DISPOSABLE_MARKER,
     DISPOSABLE_MARKER_CONTENT,
     InjectedMeasurementFault,
@@ -22,6 +20,24 @@ from components.Chatterbox.runtime.measurement import (
     validate_disposable_paths,
 )
 from components.Chatterbox.runtime.runtime import build_paths, calculate_storage_plan, preflight
+
+
+V2_MODEL_FILE_PATHS = (
+    "ve.pt",
+    "t3_mtl23ls_v2.safetensors",
+    "s3gen.pt",
+    "grapheme_mtl_merged_expanded_v1.json",
+    "conds.pt",
+    "Cangjie5_TC.json",
+)
+V3_MODEL_FILE_PATHS = (
+    "ve.pt",
+    "t3_mtl23ls_v3.safetensors",
+    "s3gen.pt",
+    "grapheme_mtl_merged_expanded_v1.json",
+    "conds.pt",
+    "Cangjie5_TC.json",
+)
 
 
 ZERO_EVIDENCE = {
@@ -50,7 +66,7 @@ class MeasurementTests(unittest.TestCase):
         packages = [_verified("package.whl", wheelhouse / "package.whl", b"synthetic wheel")]
         models = [
             _verified(name, paths["model"] / name, f"model:{name}".encode())
-            for name in CANONICAL_MODEL_FILE_PATHS
+            for name in V2_MODEL_FILE_PATHS
         ]
         return paths, wheelhouse, lock, packages, models
 
@@ -74,7 +90,7 @@ class MeasurementTests(unittest.TestCase):
             paths, wheelhouse, lock, packages, _models = self._surface(root)
             v3_models = [
                 _verified(name, paths["model"] / name, f"model:{name}".encode())
-                for name in canonical_model_file_paths("v3")
+                for name in V3_MODEL_FILE_PATHS
             ]
             session = MeasurementSession(
                 disposable_root=root,
@@ -84,16 +100,16 @@ class MeasurementTests(unittest.TestCase):
                 package_inputs=packages,
                 expected_package_count=1,
                 model_inputs=v3_models,
-                model_variant="v3",
+                model_profile="v3",
             )
             self.assertEqual(session.model_variant, "v3")
             self.assertEqual(
                 session.expected_model_file_paths,
-                canonical_model_file_paths("v3"),
+                V3_MODEL_FILE_PATHS,
             )
             self.assertEqual(
                 {record["name"] for record in session.revalidate_inputs()["models"]},
-                set(canonical_model_file_paths("v3")),
+                set(V3_MODEL_FILE_PATHS),
             )
 
     def test_disposable_root_and_every_path_are_required(self) -> None:
