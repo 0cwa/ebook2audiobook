@@ -533,7 +533,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("manifest_version must be 2.0.0", result["errors"])
         self.assertIn("runtime_contract_version must be 2.0.0", result["errors"])
 
-    def test_runtime_manifest_requires_exactly_six_unique_canonical_model_files(self) -> None:
+    def test_runtime_manifest_accepts_arbitrary_declared_model_files_and_rejects_ambiguity(self) -> None:
         manifest = _manifest("a" * 64)
         self.assertTrue(validate_manifest_identity(manifest)["ok"])
         self.assertEqual(
@@ -541,36 +541,50 @@ class RuntimeTests(unittest.TestCase):
             CANONICAL_MODEL_FILE_PATHS,
         )
 
-        for count in (5, 7):
-            with self.subTest(count=count):
-                changed = _copy(manifest)
-                if count == 5:
-                    changed["sources"]["model"]["files"] = changed["sources"]["model"]["files"][:5]
-                else:
-                    changed["sources"]["model"]["files"].append(
-                        {"path": "unexpected.bin", "size_bytes": 7, "sha256": "6" * 64}
-                    )
-                identity = validate_manifest_identity(changed)
-                self.assertFalse(identity["ok"])
-                self.assertTrue(any("exactly six canonical" in error for error in identity["errors"]))
-                with self.assertRaisesRegex(RuntimeConfigurationError, "exactly six canonical"):
-                    runtime_module._model_file_records(changed)
+        reduced = _copy(manifest)
+        reduced["sources"]["model"]["files"] = reduced["sources"]["model"]["files"][:3]
+        self.assertTrue(validate_manifest_identity(reduced)["ok"])
+        self.assertEqual(len(runtime_module._model_file_records(reduced)), 3)
+
+        expanded = _copy(manifest)
+        expanded["sources"]["model"]["files"].append(
+            {"path": "nested/extra.bin", "size_bytes": 7, "sha256": "6" * 64}
+        )
+        self.assertTrue(validate_manifest_identity(expanded)["ok"])
+        self.assertEqual(len(runtime_module._model_file_records(expanded)), 7)
 
         duplicate = _copy(manifest)
         duplicate["sources"]["model"]["files"][-1] = _copy(duplicate["sources"]["model"]["files"][0])
         identity = validate_manifest_identity(duplicate)
         self.assertFalse(identity["ok"])
         self.assertTrue(any("must be unique" in error for error in identity["errors"]))
-
-        substituted = _copy(manifest)
-        substituted["sources"]["model"]["files"][-1]["path"] = "noncanonical.bin"
-        identity = validate_manifest_identity(substituted)
-        self.assertFalse(identity["ok"])
-        self.assertTrue(any("canonical V2 allowlist" in error for error in identity["errors"]))
-        with self.assertRaisesRegex(RuntimeConfigurationError, "canonical V2 allowlist"):
-            runtime_module._model_file_records(substituted)
         with self.assertRaisesRegex(RuntimeConfigurationError, "must be unique"):
             runtime_module._model_file_records(duplicate)
+
+        multi = _copy(manifest)
+        model = multi["sources"]["model"]
+        model["profile"] = "v2"
+        model["loader_kind"] = "multilingual"
+        model["family"] = "chatterbox-multilingual"
+        model["repositories"] = {
+            "base": {"locator": "https://huggingface.co/Example/base", "revision": "4" * 40},
+            "pack": {"locator": "https://huggingface.co/Example/pack", "revision": "7" * 40},
+        }
+        model["files"][0]["source"] = "base"
+        for record in model["files"][1:]:
+            record["source"] = "pack"
+        self.assertTrue(validate_manifest_identity(multi)["ok"])
+        records = runtime_module._model_file_records(multi)
+        self.assertEqual(records[0]["source"], "base")
+        self.assertEqual(records[1]["source"], "pack")
+
+        wrong_source = _copy(multi)
+        wrong_source["sources"]["model"]["files"][0]["source"] = "missing"
+        identity = validate_manifest_identity(wrong_source)
+        self.assertFalse(identity["ok"])
+        self.assertTrue(any("source repository" in error for error in identity["errors"]))
+        with self.assertRaisesRegex(RuntimeConfigurationError, "source is invalid"):
+            runtime_module._model_file_records(wrong_source)
 
     def test_paths_and_fingerprint_are_stable_and_namespaced(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2356,7 +2370,7 @@ class RuntimeTests(unittest.TestCase):
             invalid = calculate_storage_plan(invalid_paths, invalid_manifest)
             self.assertEqual(invalid["status"], "invalid_storage_contract")
 
-    def test_contract_data_is_stdlib_only_immutable_and_exactly_shared(self) -> None:
+    def test_contract_data_is_stdlib_only_immutable_and_profile_aware(self) -> None:
         source = Path(contract_data.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imported_modules = {
@@ -2371,45 +2385,18 @@ class RuntimeTests(unittest.TestCase):
             for alias in node.names
         )
         self.assertTrue(imported_modules <= {"__future__", "dataclasses", "typing"})
-        probe_name = "chatterbox_contract_data_stdlib_probe"
-        probe_spec = importlib.util.spec_from_file_location(probe_name, contract_data.__file__)
-        self.assertIsNotNone(probe_spec)
-        self.assertIsNotNone(probe_spec.loader)
-        probe = importlib.util.module_from_spec(probe_spec)
-        sys.modules[probe_name] = probe
-        try:
-            probe_spec.loader.exec_module(probe)
-        finally:
-            sys.modules.pop(probe_name, None)
-        self.assertEqual(probe.CANONICAL_MODEL_FILE_PATHS, contract_data.CANONICAL_MODEL_FILE_PATHS)
-        self.assertEqual(probe.SUPPORTED_LANGUAGES, contract_data.SUPPORTED_LANGUAGES)
-
-        self.assertIs(runtime_module.CANONICAL_MODEL_FILE_PATHS, contract_data.CANONICAL_MODEL_FILE_PATHS)
         self.assertIs(runtime_module.TARGET_PYTHON, contract_data.TARGET_PYTHON)
         self.assertIs(runtime_module.RUNTIME_RECEIPT_SCHEMA, contract_data.RUNTIME_RECEIPT_SCHEMA)
-        self.assertIs(
-            contract_data.CONTRACT_DATA.canonical_model_file_paths,
-            contract_data.CANONICAL_MODEL_FILE_PATHS,
-        )
-        self.assertEqual(contract_data.CANONICAL_MODEL_FILE_PATHS, CANONICAL_MODEL_FILE_PATHS)
+        self.assertEqual(contract_data.SUPPORTED_MODEL_PROFILES, ("v2", "v3"))
+        self.assertEqual(contract_data.model_profile_spec("v2").loader_kind, "multilingual")
+        self.assertEqual(contract_data.model_profile_spec("v3").family, "chatterbox-multilingual")
         self.assertEqual(len(contract_data.SUPPORTED_LANGUAGES), 23)
         self.assertEqual(contract_data.MODEL_VARIANT, "v2")
         self.assertEqual(contract_data.TARGET_BACKEND, "cpu")
-        self.assertEqual(
-            contract_data.CANONICAL_MODEL_FILE_PATHS,
-            (
-                "ve.pt",
-                "t3_mtl23ls_v2.safetensors",
-                "s3gen.pt",
-                "grapheme_mtl_merged_expanded_v1.json",
-                "conds.pt",
-                "Cangjie5_TC.json",
-            ),
-        )
         with self.assertRaises(FrozenInstanceError):
             contract_data.CONTRACT_DATA.model_variant = "v3"  # type: ignore[misc]
-        with self.assertRaises(TypeError):
-            contract_data.CANONICAL_MODEL_FILE_PATHS[0] = "changed"  # type: ignore[index]
+        with self.assertRaises(FrozenInstanceError):
+            contract_data.model_profile_spec("v2").profile = "changed"  # type: ignore[misc]
 
     def test_host_status_is_frozen_read_only_and_does_not_expose_runtime_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
