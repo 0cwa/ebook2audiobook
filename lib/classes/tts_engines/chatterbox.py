@@ -250,14 +250,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
         self.minimum_prompt_seconds = (
             float(minimum_prompt) if minimum_prompt is not None else None
         )
-        readiness = chatterbox_host_status(
-            {**dict(session), "fine_tuned": self.model_variant}
-            if isinstance(session, Mapping)
-            else session
-        )
-        if not readiness.get("ok"):
-            raise ValueError(readiness.get("error") or "Chatterbox is not ready")
-        self.tts_key = self.session.get("model_cache") or f"chatterbox-{self.model_variant}"
+        self.tts_key = self.session.get("model_cache") or f"chatterbox-{self.model_profile}"
         self.tts_zs_key = None
         self.device = self.session.get("device", DEVICE)
         if self.device != DEVICE:
@@ -276,6 +269,14 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             raise ValueError(
                 f"Chatterbox profile {self.model_profile!r} does not support language {self.language_id!r}"
             )
+
+        readiness = chatterbox_host_status(
+            {**dict(session), "fine_tuned": self.model_profile}
+            if isinstance(session, Mapping)
+            else session
+        )
+        if not readiness.get("ok"):
+            raise ValueError(readiness.get("error") or "Chatterbox is not ready")
 
         self.params = {"samplerate": SAMPLE_RATE, "current_voice": None}
         self._client: ChatterboxClient | None = None
