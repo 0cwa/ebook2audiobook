@@ -114,12 +114,13 @@ class ChatterboxAdapterTests(unittest.TestCase):
         }
 
     @staticmethod
-    def make_voice(path: Path):
+    def make_voice(path: Path, *, seconds: float = 0.01):
+        path.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(path), "wb") as stream:
             stream.setnchannels(1)
             stream.setsampwidth(2)
             stream.setframerate(24000)
-            stream.writeframes(b"\x00\x00" * 240)
+            stream.writeframes(b"\x00\x00" * int(round(24000 * seconds)))
 
     def test_registration_is_isolated_without_importing_runtime_package(self):
         self.assertIs(
@@ -401,6 +402,56 @@ assert loaded._test_registry["chatterbox"] is loaded.Chatterbox
             self.assertEqual(engine.model_variant, "v3")
             self.assertEqual(client.kwargs["model"]["t3_model"], "v3")
             self.assertEqual(client.requests[0]["model"]["t3_model"], "v3")
+
+    def test_turbo_and_nano_are_english_only_and_not_multilingual_variants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for profile in ("turbo", "nano"):
+                with self.subTest(profile=profile):
+                    engine = chatterbox_module.Chatterbox(
+                        self.session(root, language="eng", model=profile)
+                    )
+                    request = engine.build_request(
+                        root / "process" / f"{profile}.flac",
+                        "That was unexpected [chuckle], but it worked.",
+                    )
+                    self.assertEqual(engine.model_profile, profile)
+                    self.assertEqual(engine.loader_kind, "turbo")
+                    self.assertEqual(request["language"], "en")
+                    self.assertEqual(request["model"]["profile"], profile)
+                    self.assertEqual(request["model"]["loader_kind"], "turbo")
+                    self.assertEqual(request["model"]["family"], "chatterbox-turbo")
+                    self.assertNotIn("t3_model", request["model"])
+                    self.assertEqual(
+                        request["segments"][0]["text"],
+                        "That was unexpected [chuckle], but it worked.",
+                    )
+                    engine.close()
+
+                    with self.assertRaisesRegex(ValueError, "does not support language"):
+                        chatterbox_module.Chatterbox(
+                            self.session(root, language="swe", model=profile)
+                        )
+
+    def test_turbo_and_nano_voice_prompt_duration_is_checked_before_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prompt = root / "voices" / "prompt.wav"
+            for profile in ("turbo", "nano"):
+                with self.subTest(profile=profile):
+                    engine = chatterbox_module.Chatterbox(
+                        self.session(root, language="eng", model=profile)
+                    )
+                    self.make_voice(prompt, seconds=5.0)
+                    selected, error = engine._set_voice(str(prompt))
+                    self.assertIsNone(selected)
+                    self.assertIn("longer than 5 seconds", error)
+
+                    self.make_voice(prompt, seconds=5.01)
+                    selected, error = engine._set_voice(str(prompt))
+                    self.assertEqual(selected, str(prompt.resolve()))
+                    self.assertIsNone(error)
+                    engine.close()
 
     def test_client_uses_pinned_runtime_manifest_and_model_paths(self):
         with tempfile.TemporaryDirectory() as directory:
