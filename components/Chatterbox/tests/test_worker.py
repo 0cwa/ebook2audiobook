@@ -30,7 +30,22 @@ assert SPEC is not None and SPEC.loader is not None
 worker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(worker)
 
-CANONICAL_MODEL_FILE_PATHS = contract_data.CANONICAL_MODEL_FILE_PATHS
+CANONICAL_MODEL_FILE_PATHS = (
+    "ve.pt",
+    "t3_mtl23ls_v2.safetensors",
+    "s3gen.pt",
+    "grapheme_mtl_merged_expanded_v1.json",
+    "conds.pt",
+    "Cangjie5_TC.json",
+)
+V3_MODEL_FILE_PATHS = (
+    "ve.pt",
+    "t3_mtl23ls_v3.safetensors",
+    "s3gen.pt",
+    "grapheme_mtl_merged_expanded_v1.json",
+    "conds.pt",
+    "Cangjie5_TC.json",
+)
 
 
 class WorkerValidationTests(unittest.TestCase):
@@ -53,7 +68,6 @@ class WorkerValidationTests(unittest.TestCase):
         for name in (
             "ACTIVATION_RECEIPT_SCHEMA",
             "APPROVED_LANGUAGE_IDS",
-            "CANONICAL_MODEL_FILE_PATHS",
             "CHANNELS",
             "DEVICE",
             "MAX_SEGMENTS",
@@ -145,7 +159,7 @@ class WorkerValidationTests(unittest.TestCase):
         variant: str = "v2",
     ) -> None:
         if file_paths is None:
-            file_paths = contract_data.canonical_model_file_paths(variant)
+            file_paths = V3_MODEL_FILE_PATHS if variant == "v3" else CANONICAL_MODEL_FILE_PATHS
         path.write_text(json.dumps({
             "sources": {
                 "model": {
@@ -189,7 +203,9 @@ class WorkerValidationTests(unittest.TestCase):
                 "id": "request-v3",
                 "op": "synthesize",
                 "model": {
+                    "profile": "v3",
                     "family": "chatterbox-multilingual",
+                    "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
                     "revision": "d" * 40,
                     "t3_model": "v3",
                 },
@@ -201,32 +217,43 @@ class WorkerValidationTests(unittest.TestCase):
             }
             normalized = worker.validate_request(
                 request,
-                expected_model={"revision": "d" * 40, "variant": "v3"},
+                expected_model={
+                    "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
+                    "revision": "d" * 40,
+                    "variant": "v3",
+                },
             )
-            self.assertEqual(normalized["model"]["t3_model"], "v3")
+            self.assertEqual(normalized["fingerprint"], "chatterbox-v3-aaaaaaaaaaaaaaaa")
+            with self.assertRaisesRegex(worker.WorkerRequestError, "fingerprint does not match"):
+                worker.validate_request(
+                    request,
+                    expected_model={
+                        "fingerprint": "chatterbox-v3-bbbbbbbbbbbbbbbb",
+                        "revision": "d" * 40,
+                        "variant": "v3",
+                    },
+                )
             with self.assertRaisesRegex(worker.WorkerRequestError, "variant does not match"):
                 worker.validate_request(
                     request,
-                    expected_model={"revision": "d" * 40, "variant": "v2"},
+                    expected_model={
+                        "fingerprint": "chatterbox-v3-aaaaaaaaaaaaaaaa",
+                        "revision": "d" * 40,
+                        "variant": "v2",
+                    },
                 )
 
-    def test_v3_manifest_uses_variant_specific_six_file_allowlist(self):
-        records = [
+    def test_manifest_file_records_accept_profile_specific_declared_sets(self):
+        v3_records = [
             {"path": path, "size_bytes": 1, "sha256": "0" * 64}
-            for path in contract_data.canonical_model_file_paths("v3")
+            for path in V3_MODEL_FILE_PATHS
         ]
         self.assertEqual(
-            tuple(record["path"] for record in worker._manifest_file_records(records, "v3")),
-            contract_data.canonical_model_file_paths("v3"),
+            tuple(record["path"] for record in worker._manifest_file_records(v3_records)),
+            V3_MODEL_FILE_PATHS,
         )
-        with self.assertRaisesRegex(RuntimeError, "canonical V3 allowlist"):
-            worker._manifest_file_records(
-                [
-                    {"path": path, "size_bytes": 1, "sha256": "0" * 64}
-                    for path in CANONICAL_MODEL_FILE_PATHS
-                ],
-                "v3",
-            )
+        reduced = v3_records[:3]
+        self.assertEqual(len(worker._manifest_file_records(reduced)), 3)
 
     def test_paths_outside_approved_roots_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -291,7 +318,55 @@ class WorkerValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "safe relative paths"):
                 worker._read_model_manifest(manifest, (root,))
 
-    def test_manifest_requires_exactly_six_unique_canonical_model_files(self):
+    def test_multi_repository_manifest_resolves_sources_and_uses_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "runtime-manifest.json"
+            records = [
+                {
+                    "path": path,
+                    "source": "base" if index < 3 else "pack",
+                    "size_bytes": 1,
+                    "sha256": "0" * 64,
+                }
+                for index, path in enumerate(CANONICAL_MODEL_FILE_PATHS)
+            ]
+            manifest_path.write_text(json.dumps({
+                "sources": {
+                    "model": {
+                        "profile": "v2",
+                        "loader_kind": "multilingual",
+                        "family": "chatterbox-multilingual",
+                        "repositories": {
+                            "base": {
+                                "locator": "https://huggingface.co/Example/base",
+                                "revision": "a" * 40,
+                            },
+                            "pack": {
+                                "locator": "https://huggingface.co/Example/pack",
+                                "revision": "b" * 40,
+                            },
+                        },
+                        "files": records,
+                    },
+                },
+            }), encoding="utf-8")
+
+            parsed = worker._read_model_manifest(manifest_path, (root,))
+            self.assertIsNone(parsed["repository"])
+            self.assertIsNone(parsed["revision"])
+            self.assertEqual(parsed["profile"], "v2")
+            self.assertTrue(parsed["fingerprint"].startswith("chatterbox-v2-"))
+            self.assertEqual(parsed["files"][0]["source"], "base")
+            self.assertEqual(parsed["files"][-1]["source"], "pack")
+
+            invalid = json.loads(manifest_path.read_text(encoding="utf-8"))
+            invalid["sources"]["model"]["files"][0]["source"] = "missing"
+            manifest_path.write_text(json.dumps(invalid), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not a declared repository"):
+                worker._read_model_manifest(manifest_path, (root,))
+
+    def test_manifest_requires_nonempty_unique_safe_declared_model_files(self):
         records = [
             {"path": path, "size_bytes": 1, "sha256": "0" * 64}
             for path in CANONICAL_MODEL_FILE_PATHS
@@ -300,19 +375,19 @@ class WorkerValidationTests(unittest.TestCase):
             tuple(record["path"] for record in worker._manifest_file_records(records)),
             CANONICAL_MODEL_FILE_PATHS,
         )
-        for count in (5, 7):
-            with self.subTest(count=count):
-                changed = list(records[:5]) if count == 5 else [*records, {"path": "unexpected.bin", "size_bytes": 1, "sha256": "1" * 64}]
-                with self.assertRaisesRegex(RuntimeError, "exactly six canonical"):
-                    worker._manifest_file_records(changed)
+        self.assertEqual(len(worker._manifest_file_records(records[:5])), 5)
+        expanded = [*records, {"path": "nested/extra.bin", "size_bytes": 1, "sha256": "1" * 64}]
+        self.assertEqual(len(worker._manifest_file_records(expanded)), 7)
+        with self.assertRaisesRegex(RuntimeError, "declared artifacts"):
+            worker._manifest_file_records([])
         duplicate = [dict(record) for record in records]
         duplicate[-1] = dict(duplicate[0])
         with self.assertRaisesRegex(RuntimeError, "must be unique"):
             worker._manifest_file_records(duplicate)
-        substituted = [dict(record) for record in records]
-        substituted[-1]["path"] = "noncanonical.bin"
-        with self.assertRaisesRegex(RuntimeError, "canonical V2 allowlist"):
-            worker._manifest_file_records(substituted)
+        unsafe = [dict(record) for record in records]
+        unsafe[0]["path"] = "../outside.bin"
+        with self.assertRaisesRegex(RuntimeError, "safe relative paths"):
+            worker._manifest_file_records(unsafe)
 
     def test_default_loader_is_network_blocked_and_uses_verified_local_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -407,7 +482,7 @@ class WorkerValidationTests(unittest.TestCase):
             revision = "e" * 40
             snapshot.mkdir(parents=True)
             content = b"verified-v3"
-            v3_paths = contract_data.canonical_model_file_paths("v3")
+            v3_paths = V3_MODEL_FILE_PATHS
             for relative_path in v3_paths:
                 (snapshot / relative_path).write_bytes(content)
             digest = hashlib.sha256(content).hexdigest()

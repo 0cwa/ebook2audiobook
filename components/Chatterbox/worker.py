@@ -29,9 +29,7 @@ if str(_REPOSITORY_ROOT) not in sys.path:
 from components.Chatterbox.runtime.contract_data import (
     ACTIVATION_RECEIPT_SCHEMA,
     APPROVED_LANGUAGE_IDS,
-    CANONICAL_MODEL_FILE_PATHS,
     CHANNELS,
-    canonical_model_file_paths,
     DEVICE,
     MAX_SEGMENTS,
     MAX_SILENCE_SECONDS,
@@ -40,6 +38,8 @@ from components.Chatterbox.runtime.contract_data import (
     MODEL_FAMILY,
     MODEL_RECEIPT_SCHEMA,
     MODEL_VARIANT,
+    model_profile_spec,
+    normalize_model_profile,
     normalize_model_variant,
     PKUSEG_DATA_FILENAME,
     PKUSEG_DATA_SHA256,
@@ -387,11 +387,9 @@ def _repository_id(value: Any) -> str:
     return locator
 
 
-def _manifest_file_records(value: Any, variant: str = MODEL_VARIANT) -> tuple[dict[str, Any], ...]:
-    # The allowlist remains enforced here, independently of runtime checks.
-    canonical_paths = set(canonical_model_file_paths(variant))
-    if not isinstance(value, list) or len(value) != len(canonical_paths):
-        raise RuntimeError("runtime manifest model.files must contain exactly six canonical entries")
+def _manifest_file_records(value: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list) or not value:
+        raise RuntimeError("runtime manifest model.files must contain declared artifacts")
     records = []
     seen: set[str] = set()
     for item in value:
@@ -416,9 +414,10 @@ def _manifest_file_records(value: Any, variant: str = MODEL_VARIANT) -> tuple[di
         size = item.get("size_bytes")
         if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
             raise RuntimeError(f"size_bytes for {path} must be a non-negative integer")
-        records.append({"path": path, "sha256": digest, "size_bytes": size})
-    if seen != canonical_paths:
-        raise RuntimeError(f"runtime manifest model file paths must match the canonical {variant.upper()} allowlist")
+        source = item.get("source")
+        if source is not None and (not isinstance(source, str) or not source):
+            raise RuntimeError(f"source for {path} must be a non-empty repository identifier")
+        records.append({"path": path, "source": source, "sha256": digest, "size_bytes": size})
     return tuple(records)
 
 
@@ -434,14 +433,63 @@ def _read_model_manifest(manifest_path: Path, manifest_roots: Sequence[Path]) ->
     model = sources.get("model") if isinstance(sources, Mapping) else None
     if not isinstance(model, Mapping):
         raise RuntimeError("model manifest sources.model is required")
-    revision = _immutable_revision(model.get("revision"))
+    profile = normalize_model_profile(model.get("profile", model.get("variant")))
+    if profile is None:
+        raise RuntimeError("model manifest profile is unsupported")
+    spec = model_profile_spec(profile)
+    loader_kind = model.get("loader_kind", spec.loader_kind)
+    family = model.get("family", spec.family)
+    if loader_kind != spec.loader_kind or family != spec.family:
+        raise RuntimeError("model manifest profile semantics do not match the selected profile")
+    raw_repositories = model.get("repositories")
+    repositories: dict[str, dict[str, str]] = {}
+    if isinstance(raw_repositories, Mapping) and raw_repositories:
+        for name, repository in raw_repositories.items():
+            if not isinstance(name, str) or not name or not isinstance(repository, Mapping):
+                raise RuntimeError("model manifest repositories must be named objects")
+            repositories[name] = {
+                "repository": _repository_id(repository.get("locator")),
+                "revision": _immutable_revision(repository.get("revision")),
+            }
+    else:
+        repositories["model"] = {
+            "repository": _repository_id(model.get("locator")),
+            "revision": _immutable_revision(model.get("revision")),
+        }
+
     records = _manifest_file_records(model.get("files"))
+    normalized_records: list[dict[str, Any]] = []
+    for record in records:
+        source = record.get("source")
+        if source is None and len(repositories) == 1:
+            source = next(iter(repositories))
+        if not isinstance(source, str) or source not in repositories:
+            raise RuntimeError(
+                f"model manifest file source is not a declared repository: {record['path']}"
+            )
+        normalized_records.append({**record, "source": source})
+
+    try:
+        from components.Chatterbox.runtime.provisioning import build_identity_contract
+
+        fingerprint = build_identity_contract(value, None)["model"]["fingerprint"]
+    except Exception as exc:
+        raise RuntimeError("model manifest fingerprint could not be derived") from exc
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise RuntimeError("model manifest fingerprint is invalid")
+
+    singular_repository = next(iter(repositories.values())) if len(repositories) == 1 else None
     return {
-        "repository": _repository_id(model.get("locator")),
-        "revision": revision,
-        "variant": model.get("variant"),
-        "files": records,
-        "allow_patterns": [record["path"] for record in records],
+        "repository": singular_repository["repository"] if singular_repository else None,
+        "revision": singular_repository["revision"] if singular_repository else None,
+        "repositories": repositories,
+        "fingerprint": fingerprint,
+        "profile": profile,
+        "variant": profile,
+        "loader_kind": loader_kind,
+        "family": family,
+        "files": tuple(normalized_records),
+        "allow_patterns": [record["path"] for record in normalized_records],
     }
 
 
@@ -623,8 +671,23 @@ def validate_request(
     variant = normalize_model_variant(model.get("t3_model"))
     if variant is None:
         raise WorkerRequestError("invalid_request", "unsupported Chatterbox multilingual model variant")
-    revision = _safe_string(model.get("revision"), "model revision", max_length=512)
+    fingerprint_value = model.get("fingerprint")
+    fingerprint = None
+    if fingerprint_value is not None:
+        fingerprint = _safe_string(
+            fingerprint_value,
+            "model fingerprint",
+            max_length=256,
+        )
+    revision_value = model.get("revision")
+    revision = None
+    if revision_value is not None:
+        revision = _safe_string(revision_value, "model revision", max_length=512)
     if expected_model is not None:
+        expected_fingerprint = expected_model.get("fingerprint")
+        if expected_fingerprint:
+            if fingerprint != expected_fingerprint:
+                raise WorkerRequestError("invalid_request", "model fingerprint does not match the worker")
         expected_revision = expected_model.get("revision")
         if expected_revision and revision != expected_revision:
             raise WorkerRequestError("invalid_request", "model revision does not match the worker")
@@ -694,6 +757,7 @@ def validate_request(
     return {
         "id": request_id,
         "language": language,
+        "fingerprint": fingerprint,
         "revision": revision,
         "segments": normalized_segments,
         "output": final_output,
@@ -751,6 +815,7 @@ class ChatterboxWorker:
     ):
         self.approved_roots = approved_roots
         self.model_revision = model_revision
+        self.model_fingerprint: str | None = None
         self.model_manifest_path = model_manifest_path
         self.approved_model_root = approved_model_root
         self.approved_manifest_root = approved_manifest_root
@@ -802,7 +867,13 @@ class ChatterboxWorker:
                     (manifest_root,),
                 )
                 self.model_revision = manifest["revision"]
-                self.model_variant = manifest["variant"]
+                self.model_fingerprint = manifest["fingerprint"]
+                self.model_profile = manifest["profile"]
+                self.model_variant = manifest["profile"]
+                if manifest["loader_kind"] != "multilingual":
+                    raise RuntimeError(
+                        f"unsupported Chatterbox loader kind in this worker: {manifest['loader_kind']}"
+                    )
                 try:
                     snapshot_path = _verify_model_snapshot(model_root, manifest["files"], model_root)
                 except Exception as exc:
@@ -917,9 +988,10 @@ class ChatterboxWorker:
                 request,
                 configured_roots=self.approved_roots,
                 expected_model={
+                    "fingerprint": self.model_fingerprint,
                     "revision": self.model_revision,
                     "variant": self.model_variant,
-                } if self.model_revision else None,
+                } if self.model_fingerprint else None,
                 supported_languages=self.supported_languages,
             )
             result = self._generate_file(normalized, cancel)

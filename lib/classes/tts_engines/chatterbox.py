@@ -46,7 +46,9 @@ class _RuntimeDetails:
     manifest_path: Path
     model_root: Path
     manifest_root: Path
-    model_revision: str
+    model_profile: str
+    model_fingerprint: str
+    model_revision: str | None
 
 
 def _selected_model_variant(session: Any) -> str:
@@ -147,9 +149,19 @@ def _runtime_details(variant: str = DEFAULT_MODEL_VARIANT) -> _RuntimeDetails:
     environment = status.get("environment")
     if not isinstance(environment, Mapping):
         raise ValueError("Chatterbox runtime status is missing environment")
+    model_profile = status.get("model_profile")
+    if not isinstance(model_profile, str) or not model_profile:
+        raise ValueError("Chatterbox runtime status is missing model_profile")
+    if model_profile != variant:
+        raise ValueError(
+            f"Chatterbox runtime profile {model_profile!r} does not match requested profile {variant!r}"
+        )
+    model_fingerprint = status.get("model_fingerprint")
+    if not isinstance(model_fingerprint, str) or not model_fingerprint:
+        raise ValueError("Chatterbox runtime status is missing model_fingerprint")
     model_revision = status.get("model_revision")
-    if not isinstance(model_revision, str) or not model_revision:
-        raise ValueError("Chatterbox runtime status is missing model_revision")
+    if model_revision is not None and (not isinstance(model_revision, str) or not model_revision):
+        raise ValueError("Chatterbox runtime status has an invalid model_revision")
 
     return _RuntimeDetails(
         interpreter=_status_path(status, "interpreter"),
@@ -157,6 +169,8 @@ def _runtime_details(variant: str = DEFAULT_MODEL_VARIANT) -> _RuntimeDetails:
         manifest_path=_status_path(status, "manifest_path"),
         model_root=_status_path(status, "verified_model_root"),
         manifest_root=_status_path(status, "manifest_root"),
+        model_profile=model_profile,
+        model_fingerprint=model_fingerprint,
         model_revision=model_revision,
     )
 
@@ -309,6 +323,17 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             self._runtime = _runtime_details(self.model_variant)
         return self._runtime
 
+    def _model_identity(self, runtime: _RuntimeDetails) -> dict[str, str]:
+        identity = {
+            "profile": self.model_variant,
+            "family": MODEL_FAMILY,
+            "fingerprint": runtime.model_fingerprint,
+            "t3_model": self.model_variant,
+        }
+        if runtime.model_revision is not None:
+            identity["revision"] = runtime.model_revision
+        return identity
+
     @staticmethod
     def _tag_value(part: str) -> tuple[str, bool, str | None] | None:
         match = SML_TAG_PATTERN.fullmatch(part)
@@ -377,11 +402,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             raise ValueError("Chatterbox sentence contains no speakable text or pause")
         runtime = self._runtime_contract()
         return {
-            "model": {
-                "family": MODEL_FAMILY,
-                "revision": runtime.model_revision,
-                "t3_model": self.model_variant,
-            },
+            "model": self._model_identity(runtime),
             "language": self.language_id,
             "segments": segments,
             "output": {
@@ -416,11 +437,7 @@ class Chatterbox(TTSUtils, TTSRegistry, name="chatterbox"):
             interpreter=runtime.interpreter,
             worker_path=worker_path,
             approved_roots={"voice": self.voice_roots, "output": roots},
-            model={
-                "family": MODEL_FAMILY,
-                "revision": runtime.model_revision,
-                "t3_model": self.model_variant,
-            },
+            model=self._model_identity(runtime),
             extra_env=runtime.environment,
             model_manifest_path=runtime.manifest_path,
             approved_model_root=runtime.model_root,

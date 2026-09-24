@@ -23,9 +23,8 @@ try:
         product_status,
         verify_lock,
     )
-    from .contract_data import PKUSEG_DATA_FILENAME, PKUSEG_DATA_SHA256
+    from .contract_data import PKUSEG_DATA_FILENAME, PKUSEG_DATA_SHA256, SUPPORTED_MODEL_PROFILES
     from .measurement import (
-        CANONICAL_MODEL_FILE_PATHS,
         DISPOSABLE_MARKER,
         DISPOSABLE_MARKER_CONTENT,
         MeasurementSession,
@@ -50,9 +49,8 @@ except ImportError:  # Direct execution: python components/Chatterbox/runtime/in
         product_status,
         verify_lock,
     )
-    from contract_data import PKUSEG_DATA_FILENAME, PKUSEG_DATA_SHA256  # type: ignore[no-redef]
+    from contract_data import PKUSEG_DATA_FILENAME, PKUSEG_DATA_SHA256, SUPPORTED_MODEL_PROFILES  # type: ignore[no-redef]
     from measurement import (  # type: ignore[no-redef]
-        CANONICAL_MODEL_FILE_PATHS,
         DISPOSABLE_MARKER,
         DISPOSABLE_MARKER_CONTENT,
         MeasurementSession,
@@ -89,7 +87,7 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--runtime-dir", type=Path, default=_runtime_dir())
         sub.add_argument(
             "--model",
-            choices=("v2", "v3"),
+            choices=SUPPORTED_MODEL_PROFILES,
             default="v2",
             help="multilingual checkpoint profile (default: v2)",
         )
@@ -114,7 +112,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _manifest_path(runtime_dir: Path, model: str) -> Path:
-    filename = "runtime-manifest.json" if model == "v2" else "runtime-manifest-v3.json"
+    filename = "runtime-manifest.json" if model == "v2" else f"runtime-manifest-{model}.json"
     return (runtime_dir / filename).resolve()
 
 
@@ -210,8 +208,8 @@ def _stage_measurement_inputs(
         raise ProvisioningError("manifest model file records are missing")
     model_by_name = {str(item.get("path")): item for item in model_records if isinstance(item, dict)}
     model_paths = tuple(model_by_name)
-    if len(model_paths) != 6:
-        raise ProvisioningError("manifest model files do not contain the canonical six-file set")
+    if not model_paths or len(model_by_name) != len(model_records):
+        raise ProvisioningError("manifest model files must be a nonempty unique declared set")
     model_inputs: list[VerifiedInput] = []
     for relative in model_paths:
         record = model_by_name[relative]
@@ -262,7 +260,13 @@ def _stage_measurement_inputs(
         package_inputs=package_inputs,
         expected_package_count=CURRENT_LOCK_REQUIREMENT_COUNT,
         model_inputs=model_inputs,
-        model_variant=str(manifest.get("sources", {}).get("model", {}).get("variant", "v2")),
+        model_profile=str(
+            manifest.get("sources", {}).get("model", {}).get(
+                "profile",
+                manifest.get("sources", {}).get("model", {}).get("variant", "v2"),
+            )
+        ),
+        model_file_paths=model_paths,
         worker_data_inputs=worker_data_inputs,
     )
     sizes = {item.sha256: item.size_bytes for item in package_inputs}
