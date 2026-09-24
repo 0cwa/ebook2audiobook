@@ -2370,6 +2370,38 @@ class RuntimeTests(unittest.TestCase):
             invalid = calculate_storage_plan(invalid_paths, invalid_manifest)
             self.assertEqual(invalid["status"], "invalid_storage_contract")
 
+    def test_multi_repository_manifest_uses_fingerprint_without_singular_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = _manifest()
+            model = manifest["sources"]["model"]
+            model.pop("locator", None)
+            model.pop("revision", None)
+            model["profile"] = "v2"
+            model["loader_kind"] = "multilingual"
+            model["family"] = "chatterbox-multilingual"
+            model["repositories"] = {
+                "base": {
+                    "locator": "https://huggingface.co/Example/base",
+                    "revision": "4" * 40,
+                },
+                "pack": {
+                    "locator": "https://huggingface.co/Example/pack",
+                    "revision": "6" * 40,
+                },
+            }
+            for index, record in enumerate(model["files"]):
+                record["source"] = "base" if index < 3 else "pack"
+
+            runtime_dir, _ = _write_runtime(root, manifest)
+            paths = build_paths(runtime_dir=runtime_dir, repo_root=root)
+            contract = runtime_module._manifest_model_contract(paths.manifest_path)
+            self.assertEqual(contract["profile"], "v2")
+            self.assertEqual(contract["fingerprint"], paths.model_fingerprint)
+            self.assertIsNone(contract["revision"])
+            with self.assertRaisesRegex(RuntimeManifestError, "no singular model revision"):
+                runtime_module._manifest_model_revision(paths.manifest_path)
+
     def test_contract_data_is_stdlib_only_immutable_and_profile_aware(self) -> None:
         source = Path(contract_data.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -2425,6 +2457,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(status.status, "provisioning")
             self.assertEqual(status.capacity_status, "storage_budget_unknown")
             self.assertFalse(status.ok)
+            self.assertEqual(status.model_profile, "v2")
+            self.assertEqual(status.model_fingerprint, paths.model_fingerprint)
             self.assertEqual(status.model_revision, "4" * 40)
             self.assertEqual(status.manifest_path, paths.manifest_path)
             self.assertEqual(status.runtime_root, paths.runtime_dir)
@@ -2503,6 +2537,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(status.interpreter, environment / "bin/python")
             self.assertEqual(status.verified_model_root, model_root)
             self.assertIs(status.model_root, status.verified_model_root)
+            self.assertEqual(status.model_profile, "v2")
+            self.assertEqual(status.model_fingerprint, paths.model_fingerprint)
             self.assertEqual(status.model_revision, "4" * 40)
             self.assertEqual(status.manifest_path, paths.manifest_path)
             self.assertIsNotNone(status.environment)
