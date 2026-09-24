@@ -30,12 +30,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .contract_data import (
     ACTIVATION_RECEIPT_SCHEMA,
-    CANONICAL_MODEL_FILE_PATHS,
-    canonical_model_file_paths,
     MANIFEST_VERSION,
     MODEL_ACQUISITION_STORAGE_PHASES,
     MODEL_RECEIPT_SCHEMA,
-    normalize_model_variant,
+    model_profile_spec,
+    normalize_model_profile,
     RUNTIME_CONTRACT_VERSION,
     RUNTIME_INSTALL_STORAGE_PHASES,
     RUNTIME_RECEIPT_SCHEMA,
@@ -321,6 +320,39 @@ def _selected_artifact(source: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _model_profile_id(model: Mapping[str, Any]) -> str | None:
+    return normalize_model_profile(model.get("profile", model.get("variant")))
+
+
+def _model_repositories(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return canonical repository declarations, accepting the legacy single-repo shape."""
+
+    raw = model.get("repositories")
+    if isinstance(raw, Mapping) and raw:
+        return {
+            str(name): dict(value)
+            for name, value in raw.items()
+            if isinstance(name, str) and name and isinstance(value, Mapping)
+        }
+    locator = model.get("locator")
+    revision = model.get("revision")
+    if locator is None and revision is None:
+        return {}
+    return {"model": {"locator": locator, "revision": revision}}
+
+
+def _model_file_source(
+    item: Mapping[str, Any],
+    repositories: Mapping[str, Mapping[str, Any]],
+) -> str | None:
+    source = item.get("source")
+    if isinstance(source, str) and source:
+        return source
+    if len(repositories) == 1:
+        return next(iter(repositories))
+    return None
+
+
 def build_identity_contract(manifest: Mapping[str, Any], lock_sha256: str | None) -> dict[str, Any]:
     """Build separate executable identities from only identity-bearing fields."""
 
@@ -342,37 +374,55 @@ def build_identity_contract(manifest: Mapping[str, Any], lock_sha256: str | None
             "perth": _selected_artifact(perth),
         },
     }
+    model_profile = _model_profile_id(model) or "unknown"
+    try:
+        profile_spec = model_profile_spec(model_profile)
+        loader_kind = str(model.get("loader_kind") or profile_spec.loader_kind)
+        family = str(model.get("family") or profile_spec.family)
+    except ValueError:
+        loader_kind = str(model.get("loader_kind") or "unknown")
+        family = str(model.get("family") or "unknown")
+    repositories = _model_repositories(model)
     model_payload = {
         "schema": MODEL_IDENTITY_SCHEMA,
-        "repository": model.get("locator"),
-        "variant": model.get("variant"),
-        "revision": model.get("revision"),
+        "profile": model_profile,
+        "loader_kind": loader_kind,
+        "family": family,
+        "repositories": {
+            name: {
+                "locator": repository.get("locator"),
+                "revision": repository.get("revision"),
+            }
+            for name, repository in sorted(repositories.items())
+        },
         "files": sorted(
             [
                 {
                     "path": item.get("path"),
+                    "source": _model_file_source(item, repositories),
                     "size_bytes": item.get("size_bytes"),
                     "sha256": item.get("sha256"),
                 }
                 for item in model_files
                 if isinstance(item, Mapping)
             ],
-            key=lambda item: str(item.get("path")),
+            key=lambda item: (str(item.get("path")), str(item.get("source"))),
         ),
     }
     runtime_digest = _canonical_digest(runtime_payload)
     model_digest = _canonical_digest(model_payload)
     runtime_fingerprint = f"py311-linux-x86_64-cpu-{runtime_digest[:16]}"
-    model_variant = normalize_model_variant(model.get("variant")) or "unknown"
-    model_fingerprint = f"chatterbox-mtl-{model_variant}-{model_digest[:16]}"
+    model_fingerprint = f"chatterbox-{model_profile}-{model_digest[:16]}"
     activation_payload = {
         "schema": ACTIVATION_IDENTITY_SCHEMA,
         "runtime_fingerprint": runtime_fingerprint,
         "model_fingerprint": model_fingerprint,
+        "model_profile": model_profile,
+        "loader_kind": loader_kind,
         "product_profile": product.get("profile"),
         "worker_protocol": product.get("worker_protocol"),
     }
-    activation_fingerprint = f"chatterbox-{model_variant}-cpu-{_canonical_digest(activation_payload)[:16]}"
+    activation_fingerprint = f"chatterbox-{model_profile}-cpu-{_canonical_digest(activation_payload)[:16]}"
     return {
         "runtime": {"fingerprint": runtime_fingerprint, "payload": runtime_payload},
         "model": {"fingerprint": model_fingerprint, "payload": model_payload},
@@ -714,7 +764,7 @@ def _identity_errors(manifest: Mapping[str, Any]) -> list[str]:
         "chatterbox_package": ("filename", "version", "locator", "artifact_sha256"),
         "chatterbox_source": ("locator", "revision", "association_to_artifact"),
         "perth": ("filename", "version", "locator", "commit", "artifact_sha256", "association_to_artifact"),
-        "model": ("locator", "variant", "revision", "files"),
+        "model": ("files",),
     }
     for name, fields in required.items():
         source = sources.get(name)
@@ -738,33 +788,65 @@ def _identity_errors(manifest: Mapping[str, Any]) -> list[str]:
         if name in {"chatterbox_source", "perth"} and source.get("association_to_artifact") != "unverified":
             errors.append(f"{name}.association_to_artifact must be unverified")
         if name == "model" and isinstance(source.get("files"), list):
-            model_variant = normalize_model_variant(source.get("variant"))
-            if model_variant is None:
-                errors.append("model.variant must identify a supported multilingual variant")
-                canonical_paths: tuple[str, ...] = ()
+            profile = _model_profile_id(source)
+            if profile is None:
+                errors.append("model.profile must identify a supported Chatterbox profile")
+                profile_spec = None
             else:
-                canonical_paths = canonical_model_file_paths(model_variant)
-            if canonical_paths and len(source["files"]) != len(canonical_paths):
-                errors.append("model.files must contain exactly six canonical entries")
+                try:
+                    profile_spec = model_profile_spec(profile)
+                except ValueError:
+                    profile_spec = None
+                    errors.append("model.profile must identify a supported Chatterbox profile")
+            if profile_spec is not None:
+                loader_kind = source.get("loader_kind", profile_spec.loader_kind)
+                family = source.get("family", profile_spec.family)
+                if loader_kind != profile_spec.loader_kind:
+                    errors.append("model.loader_kind does not match the selected profile")
+                if family != profile_spec.family:
+                    errors.append("model.family does not match the selected profile")
+
+            repositories = _model_repositories(source)
+            if not repositories:
+                errors.append("model.repositories must contain at least one immutable repository")
+            for repository_name, repository in repositories.items():
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", repository_name):
+                    errors.append("model repository names must be stable identifiers")
+                    continue
+                locator = repository.get("locator")
+                revision = repository.get("revision")
+                if not isinstance(locator, str) or not locator.startswith("https://huggingface.co/"):
+                    errors.append(f"model.repositories.{repository_name}.locator must be a Hugging Face HTTPS URL")
+                if not isinstance(revision, str) or not _HEX40.fullmatch(revision):
+                    errors.append(
+                        f"model.repositories.{repository_name}.revision must be an immutable 40-character revision"
+                    )
+
+            if not source["files"]:
+                errors.append("model.files must contain at least one declared artifact")
             model_paths: list[str] = []
             for item in source["files"]:
                 if not isinstance(item, dict):
                     errors.append("model file identity must be an object")
                     continue
                 relative = PurePosixPath(str(item.get("path", "")))
-                if not item.get("path") or relative.is_absolute() or ".." in relative.parts:
+                if (
+                    not item.get("path")
+                    or relative.is_absolute()
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                    or "\\" in str(item.get("path"))
+                ):
                     errors.append("model file identity path must be a safe relative path")
-                if not isinstance(item.get("size_bytes"), int) or item["size_bytes"] < 0:
+                source_name = _model_file_source(item, repositories)
+                if source_name is None or source_name not in repositories:
+                    errors.append("model file identity must name a declared source repository")
+                if not isinstance(item.get("size_bytes"), int) or isinstance(item.get("size_bytes"), bool) or item["size_bytes"] < 0:
                     errors.append("model file identity must contain a non-negative size")
                 if not _HEX64.fullmatch(str(item.get("sha256", ""))):
                     errors.append("model file identity must contain SHA-256")
                 model_paths.append(relative.as_posix())
             if len(model_paths) != len(set(model_paths)):
                 errors.append("model.files paths must be unique")
-            if canonical_paths and set(model_paths) != set(canonical_paths):
-                errors.append(
-                    f"model.files paths must match the canonical {model_variant.upper()} allowlist"
-                )
     return errors
 
 
@@ -1286,13 +1368,17 @@ def _cleanup_owned_model_candidate(paths: RuntimePaths, candidate: Path, nonce: 
 
 def _model_file_records(manifest: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
     model = manifest.get("sources", {}).get("model", {})
-    variant = normalize_model_variant(model.get("variant")) if isinstance(model, Mapping) else None
-    if variant is None:
-        raise RuntimeConfigurationError("manifest sources.model.variant is unsupported")
-    canonical_paths = canonical_model_file_paths(variant)
-    files = model.get("files") if isinstance(model, Mapping) else None
-    if not isinstance(files, list) or len(files) != len(canonical_paths):
-        raise RuntimeConfigurationError("manifest sources.model.files must contain exactly six canonical entries")
+    if not isinstance(model, Mapping):
+        raise RuntimeConfigurationError("manifest sources.model is required")
+    profile = _model_profile_id(model)
+    if profile is None:
+        raise RuntimeConfigurationError("manifest sources.model.profile is unsupported")
+    repositories = _model_repositories(model)
+    if not repositories:
+        raise RuntimeConfigurationError("manifest sources.model.repositories is empty")
+    files = model.get("files")
+    if not isinstance(files, list) or not files:
+        raise RuntimeConfigurationError("manifest sources.model.files must contain declared artifacts")
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in files:
@@ -1311,17 +1397,23 @@ def _model_file_records(manifest: Mapping[str, Any]) -> tuple[dict[str, Any], ..
         if path in seen:
             raise RuntimeConfigurationError("manifest model file paths must be unique")
         seen.add(path)
+        source = _model_file_source(item, repositories)
+        if source is None or source not in repositories:
+            raise RuntimeConfigurationError(
+                f"manifest model file source is invalid: {path}"
+            )
         size = item.get("size_bytes")
         digest = item.get("sha256")
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise RuntimeConfigurationError(f"manifest model file size is invalid: {path}")
         if not isinstance(digest, str) or not _HEX64.fullmatch(digest):
             raise RuntimeConfigurationError(f"manifest model file SHA-256 is invalid: {path}")
-        records.append({"path": path, "size_bytes": size, "sha256": digest.lower()})
-    if set(seen) != set(canonical_paths):
-        raise RuntimeConfigurationError(
-            f"manifest model file paths must match the canonical {variant.upper()} allowlist"
-        )
+        records.append({
+            "path": path,
+            "source": source,
+            "size_bytes": size,
+            "sha256": digest.lower(),
+        })
     return tuple(records)
 
 
@@ -3128,13 +3220,24 @@ def write_activation_receipt(paths: RuntimePaths, receipt: Mapping[str, Any]) ->
     )
 
 
-def _model_file_url(manifest: Mapping[str, Any], relative_path: str) -> str:
+def _model_file_url(manifest: Mapping[str, Any], record: Mapping[str, Any]) -> str:
     model = manifest.get("sources", {}).get("model", {})
-    locator = str(model.get("locator", "")).rstrip("/")
-    revision = str(model.get("revision", ""))
+    if not isinstance(model, Mapping):
+        raise RuntimeConfigurationError("manifest sources.model is required")
+    repositories = _model_repositories(model)
+    source = record.get("source")
+    repository = repositories.get(str(source)) if isinstance(source, str) else None
+    if not isinstance(repository, Mapping):
+        raise RuntimeConfigurationError("model file source repository is invalid")
+    locator = str(repository.get("locator", "")).rstrip("/")
+    revision = str(repository.get("revision", ""))
     if not locator.startswith("https://huggingface.co/") or not _HEX40.fullmatch(revision):
         raise RuntimeConfigurationError("model locator or immutable revision is invalid")
-    quoted = "/".join(urllib.parse.quote(part, safe="") for part in PurePosixPath(relative_path).parts)
+    relative_path = str(record.get("path", ""))
+    quoted = "/".join(
+        urllib.parse.quote(part, safe="")
+        for part in PurePosixPath(relative_path).parts
+    )
     return f"{locator}/resolve/{revision}/{quoted}"
 
 
@@ -3333,7 +3436,7 @@ def acquire_model(
                     destination = snapshot / Path(*relative.parts)
                     if not _is_within(destination, snapshot):
                         raise ProvisioningError("model destination escapes the owned snapshot")
-                    download_file(_model_file_url(manifest, relative.as_posix()), destination)
+                    download_file(_model_file_url(manifest, record), destination)
                     if destination.is_symlink() or not destination.is_file():
                         raise ProvisioningError(f"downloaded model artifact is not a regular file: {relative}")
                     if destination.stat().st_size != int(record["size_bytes"]):
