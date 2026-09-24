@@ -72,14 +72,14 @@ class ChatterboxAdapterTests(unittest.TestCase):
         runtime = patch.object(
             chatterbox_module,
             "_runtime_details",
-            return_value=chatterbox_module._RuntimeDetails(
+            side_effect=lambda profile="v2": chatterbox_module._RuntimeDetails(
                 interpreter=Path("/approved/env/bin/python"),
                 environment={},
-                manifest_path=Path("/approved/runtime-manifest.json"),
-                model_root=Path("/approved/model"),
+                manifest_path=Path(f"/approved/runtime-manifest-{profile}.json"),
+                model_root=Path(f"/approved/model-{profile}"),
                 manifest_root=Path("/approved"),
-                model_profile="v2",
-                model_fingerprint="chatterbox-v2-aaaaaaaaaaaaaaaa",
+                model_profile=profile,
+                model_fingerprint=f"chatterbox-{profile}-aaaaaaaaaaaaaaaa",
                 model_revision="5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
             ),
         )
